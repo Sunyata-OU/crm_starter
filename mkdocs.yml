@@ -1,0 +1,53 @@
+site_name: CRM Starter Documentation
+site_description: Scaffold for building internal CRM-style applications with FastAPI, Jinja and HTMX.
+site_url: https://Sunyata-OU.github.io/crm_starter/
+repo_url: https://github.com/Sunyata-OU/crm_starter
+repo_name: Sunyata-OU/crm_starter
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Overview: index.md
+  - Architecture: architecture.md
+  - Configuration: configuration.md
+  - Resources Declaration: resources.md
+  - Provider Contract: providers.md
+  - Auth & Scoping: auth.md
+  - Storage & Notifications: files-and-notifications.md
+  - Scaling & Performance: scaling.md
