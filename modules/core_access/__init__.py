@@ -12,6 +12,7 @@ read-only resource like any other.
 
 from __future__ import annotations
 
+from app.core.placement import DEFAULT_CONNECTION
 from app.core.registry import Registry
 from app.core.results import Ctx
 from app.fields.types import (
@@ -94,7 +95,7 @@ def register(registry: Registry) -> None:
     registry.add_resource(_permissions(registry))
     registry.add_resource(_audit_log())
     registry.add_resource(_notifications())
-    registry.add_resource(_jobs())
+    registry.add_resource(_jobs(registry))
 
 
 def _known_resources(registry: Registry):
@@ -365,7 +366,7 @@ async def reload_permissions(records, ctx: Ctx, resource: Resource) -> ActionRes
     )
 
 
-def _jobs() -> Resource:
+def _jobs(registry: Registry) -> Resource:
     """The durable work queue, as a screen.
 
     Worth having for the same reason the audit log is: when a background job
@@ -374,9 +375,18 @@ def _jobs() -> Resource:
     and read-only apart from one action, because editing a job's state by hand
     while a worker holds it is a race with no upside.
     """
+    # Named rather than hardcoded, so a deployment can put the queue on its own
+    # database. A worker polls once a second per process; on a busy queue that
+    # is a steady write load with no reason to share a connection pool with the
+    # requests people are waiting on.
+    #
+    # Read from the registry rather than from `get_settings()`, so a caller that
+    # built this registry with particular settings -- a test, an embedding
+    # application -- gets the settings it passed rather than the environment's.
+    connection = getattr(registry.settings, "jobs_connection", None) or DEFAULT_CONNECTION
     return Resource(
         "jobs",
-        provider="db.main#jobs",
+        provider=f"{connection}#jobs",
         label="Job",
         label_plural="Background jobs",
         icon="◷",

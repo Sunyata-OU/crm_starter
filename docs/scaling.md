@@ -253,7 +253,12 @@ several places is safe.
 
 Run the worker as its own process. Work that must survive a deploy should not
 live inside the thing being deployed, and a process that is not serving
-requests can be sized and restarted on its own.
+requests can be sized and restarted on its own. The same Docker image runs it —
+`command: ["crm", "worker"]` — with the web healthcheck disabled.
+
+`CRM_JOBS_CONNECTION` puts the queue on its own database when a worker's steady
+polling starts competing with the requests people are waiting on.
+[Background jobs](background-jobs.md) covers the whole subsystem.
 
 ## Several hosts
 

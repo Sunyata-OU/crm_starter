@@ -51,4 +51,5 @@ nav:
   - Several Databases: multiple-databases.md
   - Auth & Scoping: auth.md
   - Storage & Notifications: files-and-notifications.md
+  - Background Jobs: background-jobs.md
   - Scaling & Performance: scaling.md

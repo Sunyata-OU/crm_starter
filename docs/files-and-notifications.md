@@ -104,6 +104,27 @@ CRM_EMAIL_MIN_PRIORITY=high
 
 Adding a channel is a decorator, exactly like a provider or a file backend.
 
+### When delivery happens
+
+Storing is synchronous; delivering is not, and where it runs is a setting:
+
+| `CRM_NOTIFY_DELIVERY` | Delivery | Survives a restart? |
+| --- | --- | --- |
+| `background` (default) | a task on this worker's event loop | no — in-flight ones are lost |
+| `queue` | a row, drained by `crm worker` | yes |
+| `inline` | before the request returns | n/a — what tests and CLI commands want |
+
+`background` is immediate and costs nothing; in-flight deliveries are awaited
+at shutdown, but a worker killed outright takes them with it. The notification
+row survives either way — it is written before delivery is attempted — so the
+in-app bell never loses anything. Only the outbound copy is at risk, and
+`queue` is how you stop risking it. See
+[Background jobs](background-jobs.md#queued-notification-delivery).
+
+!!! warning
+    `queue` needs `crm worker` running somewhere. Without it, notifications are
+    stored and never delivered, and nothing errors to tell you so.
+
 ### Reminders
 
 A reminder is a notification with a future `due_at`. It is stored immediately

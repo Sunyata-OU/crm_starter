@@ -104,6 +104,7 @@ S3 credentials and bucket go in `connections.yaml`.
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `CRM_NOTIFY_CHANNELS` | `inapp` | `inapp`, `email`, `webhook`, `console`. The bell always works; the rest are opt-in. |
+| `CRM_JOBS_CONNECTION` | `db.main` | Which configured connection holds the job queue. Point it at a second database to keep a busy queue's writes off the one serving requests; `crm migrate --all` then covers both. |
 | `CRM_NOTIFY_DELIVERY` | `background` | How a notification reaches its channels. `background` is a task on this worker's event loop — immediate, and lost if the worker stops. `queue` hands it to the durable job queue, which survives a restart **but needs `crm worker` running**. `inline` delivers before the request returns. |
 | `CRM_NOTIFY_BASE_URL` | `http://localhost:8000` | Used to build links in messages that leave the application. |
 | `CRM_SMTP_HOST` / `CRM_SMTP_PORT` | `localhost` / `25` | |

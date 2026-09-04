@@ -53,6 +53,8 @@ def build_registry(settings: Settings) -> Registry:
     """Load modules and return a registry that is not yet bound to providers."""
     connections = ConnectionRegistry.from_file(settings.connections_path)
     registry = Registry(connections)
+    # Before the modules load, so a module declaring a resource may consult it.
+    registry.settings = settings
     loaded = load_modules(registry, enabled=settings.modules or None)
     registry.loaded_modules = loaded
     log.info(

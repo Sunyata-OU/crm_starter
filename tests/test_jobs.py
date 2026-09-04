@@ -538,3 +538,37 @@ class TestQueuedNotificationDelivery:
         queue.provider = None
         await notifier.send(Notification(recipient="ada@example.com", title="Hello"))
         assert sent == ["Hello"], "the notification was dropped instead of delivered"
+
+
+class TestWhereTheQueueLives:
+    """The queue is a resource, so it can be moved without editing a module."""
+
+    def test_it_defaults_to_the_application_database(self):
+        from app.main import build_registry
+        from app.settings import Settings
+
+        registry = build_registry(Settings(secret_key="k" * 32, environment="test"))
+        assert registry.resource("jobs").provider_ref == "db.main#jobs"
+
+    def test_it_can_be_pointed_at_another_connection(self, monkeypatch):
+        """A busy queue's writes have no reason to share the request pool."""
+        from app.main import build_registry
+        from app.settings import Settings
+
+        registry = build_registry(
+            Settings(secret_key="k" * 32, environment="test", jobs_connection="db.queue")
+        )
+        assert registry.resource("jobs").provider_ref == "db.queue#jobs"
+
+    def test_moving_it_places_its_table_there_too(self):
+        """So `crm migrate --all` covers the queue's database without being told."""
+        from app.core.placement import placement
+        from app.main import build_registry
+        from app.settings import Settings
+
+        registry = build_registry(
+            Settings(secret_key="k" * 32, environment="test", jobs_connection="db.queue")
+        )
+        place = placement(registry)
+        assert place.connection_for("jobs") == "db.queue"
+        assert place.connection_for("users") == "db.main"

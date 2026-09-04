@@ -13,6 +13,10 @@ Resource(
 )
 ```
 
+`provider` is a `connection#target` reference, an already-built provider
+object, or a `Union(...)` of several — see
+[Several databases](multiple-databases.md).
+
 ## Fields
 
 Every field answers four questions: how a submitted string becomes a Python

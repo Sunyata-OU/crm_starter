@@ -84,6 +84,12 @@ class Registry:
         #: Kept so anything downstream -- seeding, diagnostics, the system
         #: page -- can ask what the running application is actually made of.
         self.loaded_modules: list[Any] = []
+        #: The settings this registry was built from, for the modules that need
+        #: one -- which is how a module reads configuration without reaching for
+        #: the process-wide `get_settings()` and ignoring whatever it was
+        #: actually handed. Left unset when nobody supplied it; a module should
+        #: fall back rather than require it.
+        self.settings: Any = None
 
     # -- resources ----------------------------------------------------------
 

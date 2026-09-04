@@ -65,6 +65,8 @@ services:
       db:
         condition: service_healthy
     command: ["crm", "seed"]
+    healthcheck:
+      disable: true
 
   # Delivers reminders that have come due. A real deployment runs this from
   # cron or a scheduler; here it is a loop so the demo shows it working.
@@ -81,6 +83,8 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command: ["while true; do crm notify-due; sleep 60; done"]
     restart: unless-stopped
+    healthcheck:
+      disable: true
 
   # Drains the durable job queue. Its own service rather than a thread in the
   # web container, which is the whole point: work that must survive a deploy
@@ -99,6 +103,11 @@ services:
         condition: service_healthy
     command: ["crm", "worker"]
     restart: unless-stopped
+    # The image's healthcheck curls the web server, which this container does
+    # not run. Left on, it would report a perfectly healthy worker as unhealthy
+    # for ever.
+    healthcheck:
+      disable: true
 
   # S3-compatible storage, for trying the S3 file backend without an AWS
   # account. Console on :9001, credentials minioadmin / minioadmin.

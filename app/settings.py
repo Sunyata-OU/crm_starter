@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     #: "queue" hands it to the durable job queue, which survives a restart at
     #: the cost of a worker having to be running. "inline" delivers before the
     #: request returns, which is what tests and CLI commands want.
+    #: Which configured connection holds the job queue. Its own by default in
+    #: name only -- db.main is the same database as everything else -- but
+    #: pointing it at a separate one is a one-line change, and the right one to
+    #: make when a busy queue's writes start competing with the application's.
+    jobs_connection: str = "db.main"
     notify_delivery: str = "background"
     notify_channels: CsvList = ["inapp"]
     notify_base_url: str = "http://localhost:8000"

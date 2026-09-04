@@ -86,6 +86,8 @@ row-level scoping in action once the demo is on:
 | **Background jobs** | a durable queue with claims, retries, backoff and leases — `crm worker` |
 | **Passwords** | change, admin reset, emailed single-use reset links, lockout — *only where the auth provider owns the password* |
 | **Caching** | optional, shared or in-process, off by default |
+| **Several databases** | a resource per database, or **one resource merged from several**, each migrated and seeded on its own |
+| **Mobile** | one stylesheet: lists become cards, the sidebar becomes a drawer, matrices scroll |
 | **Also** | CSV export, JSON API, typeahead relations, quick filters, modal forms, migrations, health checks, per-request query counts |
 
 ## The idea in one paragraph
@@ -97,6 +99,8 @@ that answers the query language, and each declares what it can do server-side.
 those. Between providers and resources sits the *capability shim*: whatever a
 backend cannot do — filter, sort, count, aggregate — it emulates in Python, so
 every view is written once against a full contract and works over any backend.
+Because providers compose, a resource may name several at once: `Union` merges
+two databases into one set of screens, and nothing above it knows.
 
 ## Commands
 
@@ -104,6 +108,7 @@ every view is written once against a full contract and works over any backend.
 uv run crm dev                 # development server
 uv run crm serve               # production server (refuses a bad config)
 uv run crm seed                # create and populate the demo database
+uv run crm seed -c db.archive  # ... a second database, its tables only
 uv run crm resources -v        # what is registered, and every field
 uv run crm capabilities        # what each backend does natively vs. emulated
 uv run crm check-connections   # open every connection and report health
@@ -111,8 +116,11 @@ uv run crm routes              # every URL served
 uv run crm token ci-runner     # mint an API token
 uv run crm new-resource orders # print a declaration to start from
 uv run crm migrate             # bring the database up to date
+uv run crm migrate --all       # ... every database, if there is more than one
 uv run crm make-migration "…"  # generate one from the model
 uv run crm passwd you@example  # set an account's password from the shell
+uv run crm worker              # run queued background jobs until stopped
+uv run crm jobs --failed       # what is in the queue, and what broke
 uv run crm notify-due          # deliver reminders that have come due
 uv run crm notify-test you@…   # check the notification channels
 ```
@@ -124,11 +132,18 @@ docker compose up                      # app + PostgreSQL on :8000
 docker compose run --rm seed           # load the sample data
 docker compose --profile storage up    # add MinIO, to try the S3 backend
 docker compose --profile mail up       # add Mailpit, to try email notifications
+docker compose --profile worker up     # add a job worker to drain the queue
 ```
 
 The image is multi-stage, runs as a non-root user, and carries a healthcheck
 against `/healthz`. Uploads live on a named volume so they outlive the
 container.
+
+One image, three roles. There is no `ENTRYPOINT`, so the command replaces the
+web server: `crm seed`, `crm worker`, `crm notify-due`. A container that is not
+serving HTTP should disable the inherited healthcheck, which curls `/healthz`
+and would otherwise report a healthy worker as unhealthy for ever — the
+`worker` and `notifier` services show it.
 
 ## Adding a resource
 
@@ -174,6 +189,8 @@ app/templates/fields/display/currency.html
 - [`architecture.md`](architecture.md) — how the layers fit together
 - [`configuration.md`](configuration.md) — every setting, and which file it belongs in
 - [`providers.md`](providers.md) — writing a provider for your own backend
+- [`multiple-databases.md`](multiple-databases.md) — resources across several databases, and one resource merged from several
+- [`background-jobs.md`](background-jobs.md) — the durable queue, the worker, and what a handler may raise
 - [`resources.md`](resources.md) — the declaration reference
 - [`auth.md`](auth.md) — the four auth providers, RBAC and the audit trail
 - [`files-and-notifications.md`](files-and-notifications.md) — file storage backends and notification channels
@@ -194,3 +211,7 @@ on it.
 ```bash
 uv run ruff check . && uv run mypy app
 ```
+
+## License
+
+[MIT](https://github.com/Sunyata-OU/crm_starter/blob/main/LICENSE). Use it, fork it, ship it.

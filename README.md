@@ -139,6 +139,12 @@ The image is multi-stage, runs as a non-root user, and carries a healthcheck
 against `/healthz`. Uploads live on a named volume so they outlive the
 container.
 
+One image, three roles. There is no `ENTRYPOINT`, so the command replaces the
+web server: `crm seed`, `crm worker`, `crm notify-due`. A container that is not
+serving HTTP should disable the inherited healthcheck, which curls `/healthz`
+and would otherwise report a healthy worker as unhealthy for ever — the
+`worker` and `notifier` services show it.
+
 ## Adding a resource
 
 1. Create `modules/my_module/__init__.py` with a `MANIFEST` and a
@@ -184,6 +190,7 @@ app/templates/fields/display/currency.html
 - [`docs/configuration.md`](docs/configuration.md) — every setting, and which file it belongs in
 - [`docs/providers.md`](docs/providers.md) — writing a provider for your own backend
 - [`docs/multiple-databases.md`](docs/multiple-databases.md) — resources across several databases, and one resource merged from several
+- [`docs/background-jobs.md`](docs/background-jobs.md) — the durable queue, the worker, and what a handler may raise
 - [`docs/resources.md`](docs/resources.md) — the declaration reference
 - [`docs/auth.md`](docs/auth.md) — the four auth providers, RBAC and the audit trail
 - [`docs/files-and-notifications.md`](docs/files-and-notifications.md) — file storage backends and notification channels
