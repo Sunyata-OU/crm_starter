@@ -1,0 +1,20 @@
+# Keep the build context small and free of anything host-specific.
+.git
+.gitignore
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Local state that must never be baked into an image.
+.env
+*.db
+*.sqlite3
+var/
+
+docs/
+tests/
+*.md
+!README.md

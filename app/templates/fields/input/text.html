@@ -1,0 +1,4 @@
+{% import "macros/fields.html" as m with context %}
+<input type="text" class="input" value="{{ value|default('', true) }}"
+       {% if field.max_length is defined and field.max_length %}maxlength="{{ field.max_length }}"{% endif %}
+       {{ m.attrs(bound) }}>

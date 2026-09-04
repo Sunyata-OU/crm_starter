@@ -1,0 +1,2 @@
+{% import "macros/fields.html" as m with context %}
+<input type="email" class="input" value="{{ value|default('', true) }}" autocomplete="email" {{ m.attrs(bound) }}>

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{ resource.label_plural }}{% endblock %}
+{% block heading %}{{ resource.label_plural }} · {{ spec.label }}{% endblock %}
+
+{% block content %}
+  {% include "views/_toolbar.html" %}
+
+  {#
+    Drawn with CSS-sized bars rather than a charting library: no dependency, it
+    prints, and it is readable by a screen reader as a table of values.
+  #}
+  <section class="card">
+    <h2 class="card-title">{{ spec.label }}</h2>
+    {% if rows %}
+      <ol class="chart chart-{{ spec.chart }}" role="list">
+        {% for row in rows %}
+          {% set raw = row.get(spec.group_by) %}
+          {% set label = labels.get(spec.group_by, {}).get(raw, raw if raw is not none else '—') %}
+          {% set value = row.get(spec.measure.alias) or 0 %}
+          {% set pct = (value / max_value * 100) if max_value else 0 %}
+          <li class="chart-row">
+            <span class="chart-label" title="{{ label }}">{{ label }}</span>
+            <span class="chart-track">
+              <span class="chart-bar" style="--pct:{{ '%.1f'|format(pct) }}%"></span>
+            </span>
+            <span class="chart-value">{{ '{:,.0f}'.format(value|float) }}</span>
+          </li>
+        {% endfor %}
+      </ol>
+    {% else %}
+      <p class="muted">No data to chart.</p>
+    {% endif %}
+  </section>
+{% endblock %}

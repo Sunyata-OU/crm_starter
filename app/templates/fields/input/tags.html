@@ -1,0 +1,4 @@
+{% import "macros/fields.html" as m with context %}
+<input type="text" class="input"
+       value="{{ value|join(', ') if value is iterable and value is not string else (value|default('', true)) }}"
+       placeholder="Comma separated" {{ m.attrs(bound) }}>

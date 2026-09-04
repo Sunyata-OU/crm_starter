@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}{{ resource.label_plural }}{% endblock %}
+{% block heading %}{{ resource.label_plural }} · {{ spec.label }}{% endblock %}
+
+{% block content %}
+  {% include "views/_toolbar.html" %}
+
+  {#
+    A cross-tabulation built from the flat aggregate rows the provider returned.
+    The pivoting happens here rather than in the query, so it works identically
+    over a backend that can only group by one field at a time.
+  #}
+  {% set row_field = spec.rows[0] %}
+  {% set col_field = spec.columns[0] if spec.columns else none %}
+  {% set measure = spec.measures[0] %}
+
+  {% set ns = namespace(rows=[], cols=[]) %}
+  {% for r in rows %}
+    {% if r.get(row_field) not in ns.rows %}{% set ns.rows = ns.rows + [r.get(row_field)] %}{% endif %}
+    {% if col_field and r.get(col_field) not in ns.cols %}{% set ns.cols = ns.cols + [r.get(col_field)] %}{% endif %}
+  {% endfor %}
+
+  <div class="table-wrap">
+    <table class="data-table pivot">
+      <thead>
+        <tr>
+          <th>{{ resource.field(row_field).label }}</th>
+          {% for c in ns.cols %}
+            <th class="align-right">{{ labels.get(col_field, {}).get(c, c if c is not none else '—') }}</th>
+          {% endfor %}
+          {% if not col_field %}<th class="align-right">{{ measure.alias }}</th>{% endif %}
+          {% if spec.show_totals %}<th class="align-right total-col">Total</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for rv in ns.rows %}
+          {% set row_total = namespace(v=0) %}
+          <tr>
+            <th scope="row">{{ labels.get(row_field, {}).get(rv, rv if rv is not none else '—') }}</th>
+            {% if col_field %}
+              {% for cv in ns.cols %}
+                {% set cell = namespace(v=none) %}
+                {% for r in rows %}
+                  {% if r.get(row_field) == rv and r.get(col_field) == cv %}{% set cell.v = r.get(measure.alias) %}{% endif %}
+                {% endfor %}
+                {% if cell.v is not none %}{% set row_total.v = row_total.v + (cell.v|float) %}{% endif %}
+                <td class="align-right">{{ '{:,.0f}'.format(cell.v|float) if cell.v is not none else '—' }}</td>
+              {% endfor %}
+            {% else %}
+              {% set cell = namespace(v=0) %}
+              {% for r in rows %}{% if r.get(row_field) == rv %}{% set cell.v = r.get(measure.alias) or 0 %}{% endif %}{% endfor %}
+              {% set row_total.v = cell.v|float %}
+              <td class="align-right">{{ '{:,.0f}'.format(cell.v|float) }}</td>
+            {% endif %}
+            {% if spec.show_totals %}
+              <td class="align-right total-col"><strong>{{ '{:,.0f}'.format(row_total.v) }}</strong></td>
+            {% endif %}
+          </tr>
+        {% else %}
+          <tr><td colspan="99"><p class="muted">No data.</p></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

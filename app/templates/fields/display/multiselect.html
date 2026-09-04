@@ -1,0 +1,5 @@
+{% if value %}
+  <span class="tag-list">
+    {% for item in value %}<span class="tag">{{ item }}</span>{% endfor %}
+  </span>
+{% else %}{{ ''|blank }}{% endif %}

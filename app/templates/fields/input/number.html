@@ -1,0 +1,6 @@
+{% import "macros/fields.html" as m with context %}
+<input type="number" class="input align-right" value="{{ value if value is not none else '' }}"
+       {% if field.min is not none %}min="{{ field.min }}"{% endif %}
+       {% if field.max is not none %}max="{{ field.max }}"{% endif %}
+       step="{{ field.step|default('any') }}"
+       {{ m.attrs(bound) }}>

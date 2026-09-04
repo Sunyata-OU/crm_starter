@@ -1,0 +1,4 @@
+{# Typeahead suggestions for a relation field's datalist. #}
+{% for option in options %}
+  <option value="{{ option.value }}">{{ option.label }}</option>
+{% endfor %}

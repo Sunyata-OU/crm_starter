@@ -1,0 +1,627 @@
+"""A provider backed by a SQL table.
+
+Fully capable: filtering, sorting, searching, pagination, counting and
+aggregation all happen in the database, so the capability shim steps aside
+entirely and large tables page without loading rows into the application.
+
+Tables are reflected on first use rather than declared, which is what lets a
+resource point at an existing schema without a model class being written for it.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from datetime import date as date_type
+from datetime import datetime as datetime_type
+from datetime import time as time_type
+from typing import Any
+
+from sqlalchemy import (
+    Table,
+    delete,
+    func,
+    insert,
+    select,
+    text,
+    update,
+)
+from sqlalchemy import (
+    and_ as sa_and,
+)
+from sqlalchemy import (
+    not_ as sa_not,
+)
+from sqlalchemy import (
+    or_ as sa_or,
+)
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.sql import ColumnElement, Select
+
+from app.core.connections import ConnectionSpec, register_connection
+from app.core.errors import (
+    ConfigError,
+    ConflictError,
+    NotFound,
+    ProviderError,
+    UnsupportedOperation,
+)
+from app.core.instrument import instrument_engine
+from app.core.query import (
+    Agg,
+    AggSpec,
+    Condition,
+    Filter,
+    ListQuery,
+    Not,
+    Op,
+    Page,
+    Sort,
+    SortDir,
+)
+from app.core.registry import register_provider_factory
+from app.core.results import Ctx, Record, WriteResult
+from app.providers.base import FULL, BaseProvider, Rows
+
+# -- connection ------------------------------------------------------------
+
+
+class SQLConnection:
+    """An async engine plus the tables reflected from it so far."""
+
+    def __init__(self, engine: AsyncEngine, *, schema: str | None = None) -> None:
+        self.engine = engine
+        # Here rather than in the factory below, so an engine built by hand --
+        # a test, a script, an embedding application -- is counted too.
+        instrument_engine(engine)
+        self.schema = schema
+        self._tables: dict[str, Table] = {}
+
+    async def table(self, name: str) -> Table:
+        """Reflect ``name`` once and cache it."""
+        if name in self._tables:
+            return self._tables[name]
+        from sqlalchemy import MetaData
+
+        metadata = MetaData(schema=self.schema)
+        try:
+            async with self.engine.connect() as conn:
+                await conn.run_sync(metadata.reflect, only=[name], views=True)
+        except SQLAlchemyError as exc:
+            # A ProviderError, not a ConfigError: the commonest cause is a
+            # database that is temporarily unreachable, which is a 502 the
+            # operator should look outward for -- not a 500 implying a bug here.
+            # A genuinely missing table produces the same class, with a message
+            # that says so.
+            raise ProviderError(
+                f"could not read the definition of table {name!r}: {exc}. "
+                f"Is the database reachable, and has the schema been created?"
+            ) from exc
+        key = f"{self.schema}.{name}" if self.schema else name
+        # An explicit None check, not `a or b`: SQLAlchemy raises on the truth
+        # value of a Table, since `bool(table)` has no sensible meaning.
+        table = metadata.tables.get(key)
+        if table is None:
+            table = metadata.tables.get(name)
+        if table is None:
+            raise ConfigError(
+                f"table {name!r} was not found in the database. Check the "
+                f"resource's provider reference, or run 'crm migrate'."
+            )
+        self._tables[name] = table
+        return table
+
+    async def close(self) -> None:
+        await self.engine.dispose()
+
+
+@register_connection(
+    "sqlalchemy",
+    close=lambda conn: conn.close(),
+    check=lambda conn: _check_sql(conn),
+)
+async def open_sqlalchemy(spec: ConnectionSpec) -> SQLConnection:
+    url = spec.option("url", required=True)
+    options: dict[str, Any] = {
+        "echo": spec.flag("echo", False),
+        # Checks a pooled connection before handing it out. Costs one round
+        # trip; saves the first request after a database restart or an idle
+        # timeout from failing.
+        "pool_pre_ping": spec.flag("pool_pre_ping", True),
+    }
+    # SQLite ignores pool sizing and rejects the arguments, so they are only
+    # passed to backends that pool.
+    if not url.startswith("sqlite"):
+        options.update(
+            pool_size=spec.number("pool_size", 10),
+            max_overflow=spec.number("max_overflow", 20),
+            # Recycle below any proxy or database idle timeout, or a pooled
+            # connection is eventually handed out already dead.
+            pool_recycle=spec.number("pool_recycle", 1800),
+            pool_timeout=spec.number("pool_timeout", 30),
+        )
+    options.update(spec.option("engine_options") or {})
+
+    engine = create_async_engine(url, **options)
+    return SQLConnection(engine, schema=spec.option("schema"))
+
+
+async def _check_sql(conn: SQLConnection) -> tuple[bool, str]:
+    async with conn.engine.connect() as c:
+        await c.execute(text("SELECT 1"))
+    return True, f"connected to {conn.engine.url.render_as_string(hide_password=True)}"
+
+
+# -- filter translation ----------------------------------------------------
+
+
+def _column(table: Table, name: str) -> ColumnElement[Any]:
+    try:
+        return table.c[name]
+    except KeyError:
+        columns = ", ".join(c.name for c in table.c)
+        raise ProviderError(
+            f"table {table.name!r} has no column {name!r}; columns are: {columns}"
+        ) from None
+
+
+def build_condition(table: Table, cond: Condition) -> ColumnElement[bool]:
+    """Translate one condition into a SQL expression."""
+    col = _column(table, cond.field)
+    value = cond.value
+    match cond.op:
+        case Op.EQ:
+            return col.is_(None) if value is None else col == value
+        case Op.NE:
+            return col.is_not(None) if value is None else col != value
+        case Op.LT:
+            return col < value
+        case Op.LTE:
+            return col <= value
+        case Op.GT:
+            return col > value
+        case Op.GTE:
+            return col >= value
+        case Op.IN:
+            return col.in_(list(value))
+        case Op.NOT_IN:
+            return col.not_in(list(value))
+        case Op.IS_NULL:
+            return col.is_(None)
+        case Op.NOT_NULL:
+            return col.is_not(None)
+        case Op.BETWEEN:
+            low, high = tuple(value)
+            return col.between(low, high)
+        case Op.CONTAINS:
+            return col.like(f"%{_escape_like(value)}%", escape="\\")
+        case Op.ICONTAINS:
+            return col.ilike(f"%{_escape_like(value)}%", escape="\\")
+        case Op.STARTSWITH:
+            return col.ilike(f"{_escape_like(value)}%", escape="\\")
+        case Op.ENDSWITH:
+            return col.ilike(f"%{_escape_like(value)}", escape="\\")
+    raise UnsupportedOperation(f"operator {cond.op!r} has no SQL translation")
+
+
+def _escape_like(value: Any) -> str:
+    """Neutralise LIKE wildcards in user input.
+
+    Without this, a search for "50%" would match far more than intended -- a
+    correctness bug, and on a large table a performance one.
+    """
+    return str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def build_filter(table: Table, f: Filter | None) -> ColumnElement[bool] | None:
+    """Translate a filter tree into a SQL WHERE expression."""
+    if f is None:
+        return None
+    if isinstance(f, Condition):
+        return build_condition(table, f)
+    if isinstance(f, Not):
+        inner = build_filter(table, f.child)
+        return None if inner is None else sa_not(inner)
+    parts = [p for p in (build_filter(table, c) for c in f.children) if p is not None]
+    if not parts:
+        return None
+    return sa_and(*parts) if f.op == "and" else sa_or(*parts)
+
+
+def build_search(table: Table, term: str, fields: tuple[str, ...]) -> ColumnElement[bool] | None:
+    """Every word must appear in at least one searched column."""
+    words = [w for w in term.split() if w]
+    if not words or not fields:
+        return None
+    columns = [_column(table, name) for name in fields if name in table.c]
+    if not columns:
+        return None
+    clauses = [
+        sa_or(*[c.ilike(f"%{_escape_like(word)}%", escape="\\") for c in columns])
+        for word in words
+    ]
+    return sa_and(*clauses)
+
+
+def build_order(table: Table, sorts: tuple[Sort, ...]) -> list[ColumnElement[Any]]:
+    order: list[ColumnElement[Any]] = []
+    for s in sorts:
+        if s.field not in table.c:
+            continue
+        col = _column(table, s.field)
+        # NULLs last in both directions matches what the local engine does, so
+        # a list looks the same whichever backend serves it.
+        order.append(col.desc().nullslast() if s.dir is SortDir.DESC else col.asc().nullslast())
+    return order
+
+
+# -- provider --------------------------------------------------------------
+
+
+class SQLProvider(BaseProvider):
+    """Reads and writes one table through an async engine."""
+
+    def __init__(
+        self,
+        connection: SQLConnection,
+        table_name: str,
+        *,
+        name: str = "",
+        pk_field: str = "id",
+        searchable_fields: tuple[str, ...] = (),
+        read_only: bool = False,
+    ) -> None:
+        self.connection = connection
+        self.table_name = table_name
+        self.name = name or f"sql:{table_name}"
+        self.pk_field = pk_field
+        self.capabilities = FULL.replace(
+            searchable_fields=searchable_fields,
+            **({"write": False, "delete": False} if read_only else {}),
+        )
+        self._table: Table | None = None
+
+    async def table(self) -> Table:
+        if self._table is None:
+            self._table = await self.connection.table(self.table_name)
+        return self._table
+
+    def _pk_column(self, table: Table) -> ColumnElement[Any]:
+        if self.pk_field in table.c:
+            return table.c[self.pk_field]
+        # Fall back to the declared primary key when the resource did not name one.
+        primary = list(table.primary_key.columns)
+        if not primary:
+            raise ProviderError(f"table {table.name!r} has no primary key to address rows by")
+        return primary[0]
+
+    def _selected(self, table: Table, q: ListQuery) -> Sequence[ColumnElement[Any]]:
+        """Columns to select, always including the primary key.
+
+        Narrowing to the fields a view needs matters on wide tables; keeping
+        the key means the rendered rows can still link to their detail page.
+        """
+        if not q.fields:
+            return list(table.c)
+        wanted = set(q.fields) | {self.pk_field}
+        chosen = [c for c in table.c if c.name in wanted]
+        return chosen or list(table.c)
+
+    def _apply_where(self, stmt: Select, table: Table, q: ListQuery) -> Select:
+        where = build_filter(table, q.effective_filter)
+        if where is not None:
+            stmt = stmt.where(where)
+        if q.search:
+            search = build_search(table, q.search, self.capabilities.searchable_fields)
+            if search is not None:
+                stmt = stmt.where(search)
+        return stmt
+
+    # -- reads --------------------------------------------------------------
+
+    async def warm(self) -> None:
+        """Reflect the table now rather than on the first request.
+
+        Reflection is a handful of catalogue queries per table. Left until the
+        first request, they land on a user and show up as one slow page after
+        every deploy; done here they cost a moment of startup and confirm the
+        table exists while there is still a log nobody is waiting on.
+        """
+        await self.table()
+
+    async def list(self, q: ListQuery, ctx: Ctx) -> Page[Record]:
+        table = await self.table()
+        stmt = select(*self._selected(table, q))
+        stmt = self._apply_where(stmt, table, q)
+
+        # Without a deterministic order, pagination can repeat or skip rows
+        # between requests, so fall back to the primary key.
+        order = build_order(table, q.sort) or [self._pk_column(table)]
+        stmt = stmt.order_by(*order)
+
+        stmt = stmt.limit(q.page_size).offset(q.offset)
+
+        try:
+            async with self.connection.engine.connect() as conn:
+                rows = (await conn.execute(stmt)).mappings().all()
+                total = None
+                if q.with_total:
+                    count_stmt = self._apply_where(
+                        select(func.count()).select_from(table), table, q
+                    )
+                    total = (await conn.execute(count_stmt)).scalar_one()
+        except SQLAlchemyError as exc:
+            raise ProviderError(f"query against {self.table_name!r} failed: {exc}") from exc
+
+        items = [self._record(dict(row)) for row in rows]
+        return Page(
+            items=items,
+            page=q.page,
+            page_size=q.page_size,
+            total=total,
+            has_more=(q.offset + len(items) < total) if total is not None else len(items) >= q.page_size,
+        )
+
+    async def get(self, pk: Any, ctx: Ctx) -> Record | None:
+        table = await self.table()
+        column = self._pk_column(table)
+        stmt = select(table).where(column == self._coerce_pk(column, pk))
+        try:
+            async with self.connection.engine.connect() as conn:
+                row = (await conn.execute(stmt)).mappings().first()
+        except SQLAlchemyError as exc:
+            raise ProviderError(f"lookup in {self.table_name!r} failed: {exc}") from exc
+        return self._record(dict(row)) if row is not None else None
+
+    @staticmethod
+    def _coerce_pk(column: ColumnElement[Any], pk: Any) -> Any:
+        """Convert a path parameter to the key column's type.
+
+        Route parameters always arrive as text; comparing a string to an integer
+        column returns nothing on strict backends such as PostgreSQL.
+        """
+        if not isinstance(pk, str):
+            return pk
+        try:
+            python_type = column.type.python_type
+        except (NotImplementedError, AttributeError):
+            return pk
+        if python_type is int:
+            try:
+                return int(pk)
+            except ValueError:
+                return pk
+        return pk
+
+    async def aggregate(self, spec: AggSpec, ctx: Ctx) -> Rows:
+        table = await self.table()
+        group_cols = [_column(table, f) for f in spec.group_by]
+
+        measures: list[ColumnElement[Any]] = []
+        for m in spec.measures:
+            match m.agg:
+                case Agg.COUNT:
+                    measures.append(func.count().label(m.alias))
+                case Agg.SUM:
+                    measures.append(func.sum(_column(table, m.field or "")).label(m.alias))
+                case Agg.AVG:
+                    measures.append(func.avg(_column(table, m.field or "")).label(m.alias))
+                case Agg.MIN:
+                    measures.append(func.min(_column(table, m.field or "")).label(m.alias))
+                case Agg.MAX:
+                    measures.append(func.max(_column(table, m.field or "")).label(m.alias))
+
+        # select_from is not optional here. With no group-by columns and a
+        # bare count(), the statement references no column of the table, so
+        # SQLAlchemy cannot infer a FROM clause -- it emits "SELECT count(*)",
+        # which returns 1 rather than the number of rows. Naming the table
+        # explicitly is what makes an ungrouped aggregate correct.
+        stmt = select(*group_cols, *measures).select_from(table)
+        where = build_filter(table, spec.effective_filter)
+        if where is not None:
+            stmt = stmt.where(where)
+        if group_cols:
+            stmt = stmt.group_by(*group_cols)
+        if spec.sort:
+            stmt = stmt.order_by(*build_order(table, spec.sort))
+        if spec.limit:
+            stmt = stmt.limit(spec.limit)
+
+        try:
+            async with self.connection.engine.connect() as conn:
+                rows = (await conn.execute(stmt)).mappings().all()
+        except SQLAlchemyError as exc:
+            raise ProviderError(f"aggregate over {self.table_name!r} failed: {exc}") from exc
+        return [dict(r) for r in rows]
+
+    # -- writes -------------------------------------------------------------
+
+    async def create(self, data: dict[str, Any], ctx: Ctx) -> WriteResult:
+        table = await self.table()
+        values = self._known_columns(table, data)
+        if not values:
+            return WriteResult.failure("Nothing to save.")
+        stmt = insert(table).values(**values)
+        try:
+            async with self.connection.engine.begin() as conn:
+                if self.connection.engine.dialect.insert_returning:
+                    row = (await conn.execute(stmt.returning(*table.c))).mappings().first()
+                    return WriteResult.success(self._record(dict(row)) if row else None)
+                result = await conn.execute(stmt)
+                new_pk = result.inserted_primary_key
+                key = new_pk[0] if new_pk else values.get(self.pk_field)
+        except IntegrityError as exc:
+            raise ConflictError(_readable_integrity_error(exc)) from exc
+        except SQLAlchemyError as exc:
+            raise ProviderError(f"insert into {self.table_name!r} failed: {exc}") from exc
+        created = await self.get(key, ctx)
+        return WriteResult.success(created)
+
+    async def update(self, pk: Any, data: dict[str, Any], ctx: Ctx) -> WriteResult:
+        table = await self.table()
+        column = self._pk_column(table)
+        key = self._coerce_pk(column, pk)
+        values = self._known_columns(table, data, exclude_pk=True)
+        if not values:
+            existing = await self.get(key, ctx)
+            if existing is None:
+                raise NotFound(f"no record with {self.pk_field}={pk!r}")
+            return WriteResult.success(existing, message="No changes.")
+
+        stmt = update(table).where(column == key).values(**values)
+        try:
+            async with self.connection.engine.begin() as conn:
+                result = await conn.execute(stmt)
+                if result.rowcount == 0:
+                    raise NotFound(f"no record with {self.pk_field}={pk!r}")
+        except IntegrityError as exc:
+            raise ConflictError(_readable_integrity_error(exc)) from exc
+        except SQLAlchemyError as exc:
+            raise ProviderError(f"update of {self.table_name!r} failed: {exc}") from exc
+        return WriteResult.success(await self.get(key, ctx))
+
+    async def update_if(
+        self, pk: Any, data: dict[str, Any], expect: dict[str, Any], ctx: Ctx
+    ) -> WriteResult | None:
+        """A conditional UPDATE: the expectation becomes part of the WHERE.
+
+        The database decides, in one statement, whether this writer wins. No
+        row matched means the record no longer looks the way the caller
+        expected -- another process got there first -- which is reported as
+        None rather than as an error, because losing the race is a normal
+        outcome and the caller's next move is to move on, not to retry.
+        """
+        table = await self.table()
+        column = self._pk_column(table)
+        key = self._coerce_pk(column, pk)
+        values = self._known_columns(table, data, exclude_pk=True)
+        if not values:
+            raise ProviderError("a conditional update needs at least one value to write")
+
+        conditions = [column == key]
+        for name, value in expect.items():
+            if name not in table.c:
+                raise ProviderError(
+                    f"cannot condition an update on {name!r}: no such column in "
+                    f"{self.table_name!r}"
+                )
+            expected = _adapt(table.c[name], value)
+            # IS NULL, not "= NULL", which matches nothing in SQL.
+            conditions.append(
+                table.c[name].is_(None) if expected is None else table.c[name] == expected
+            )
+
+        stmt = update(table).where(*conditions).values(**values)
+        try:
+            async with self.connection.engine.begin() as conn:
+                result = await conn.execute(stmt)
+        except IntegrityError as exc:
+            raise ConflictError(_readable_integrity_error(exc)) from exc
+        except SQLAlchemyError as exc:
+            raise ProviderError(f"update of {self.table_name!r} failed: {exc}") from exc
+
+        if result.rowcount == 0:
+            return None
+        return WriteResult.success(await self.get(key, ctx))
+
+    async def delete(self, pk: Any, ctx: Ctx) -> WriteResult:
+        table = await self.table()
+        column = self._pk_column(table)
+        key = self._coerce_pk(column, pk)
+        existing = await self.get(key, ctx)
+        if existing is None:
+            raise NotFound(f"no record with {self.pk_field}={pk!r}")
+        try:
+            async with self.connection.engine.begin() as conn:
+                await conn.execute(delete(table).where(column == key))
+        except IntegrityError as exc:
+            raise ConflictError(
+                "That record is still referenced by other records, so it cannot be deleted."
+            ) from exc
+        except SQLAlchemyError as exc:
+            raise ProviderError(f"delete from {self.table_name!r} failed: {exc}") from exc
+        return WriteResult.success(existing)
+
+    def _known_columns(
+        self, table: Table, data: dict[str, Any], *, exclude_pk: bool = False
+    ) -> dict[str, Any]:
+        """Keep only keys that are real columns, adapted to their types.
+
+        Two jobs. Forms carry extra keys -- CSRF tokens, submit buttons,
+        backref fields -- and passing those to SQLAlchemy raises rather than
+        being ignored. And callers that never went through the form engine (an
+        action, a seed script, the API) may hand over an ISO string where the
+        column expects a date object, which strict drivers reject outright.
+        """
+        skip = {self.pk_field} if exclude_pk else set()
+        return {
+            key: _adapt(table.c[key], value)
+            for key, value in data.items()
+            if key in table.c and key not in skip
+        }
+
+    async def health(self) -> tuple[bool, str]:
+        try:
+            table = await self.table()
+            async with self.connection.engine.connect() as conn:
+                count = (await conn.execute(select(func.count()).select_from(table))).scalar_one()
+            return True, f"{self.table_name}: {count} rows"
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+
+def _adapt(column: Any, value: Any) -> Any:
+    """Coerce a value into what this column's type accepts.
+
+    Only string-to-temporal conversion is needed in practice; SQLAlchemy
+    handles everything else. An unparseable string is passed through
+    untouched so the database reports the problem rather than this function
+    guessing.
+    """
+    if value is None or not isinstance(value, str):
+        return value
+    try:
+        python_type = column.type.python_type
+    except (NotImplementedError, AttributeError):
+        return value
+    if python_type is date_type and not isinstance(value, date_type):
+        try:
+            return date_type.fromisoformat(value[:10])
+        except ValueError:
+            return value
+    if python_type is datetime_type:
+        try:
+            return datetime_type.fromisoformat(value.replace(" ", "T").replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    if python_type is time_type:
+        try:
+            return time_type.fromisoformat(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _readable_integrity_error(exc: IntegrityError) -> str:
+    """Turn a driver constraint message into something a user can act on."""
+    detail = str(getattr(exc, "orig", exc))
+    lowered = detail.lower()
+    if "unique" in lowered or "duplicate" in lowered:
+        return "A record with those details already exists."
+    if "foreign key" in lowered:
+        return "That refers to a record which does not exist."
+    if "not null" in lowered:
+        return "A required value is missing."
+    return "That change conflicts with a constraint on the data."
+
+
+@register_provider_factory("sqlalchemy")
+def build_sql_provider(handle: SQLConnection, target: str, resource) -> SQLProvider:
+    """Wire a resource declaring ``db.name#table`` to that table."""
+    return SQLProvider(
+        handle,
+        target,
+        name=f"sql:{target}",
+        pk_field=resource.pk,
+        searchable_fields=resource.searchable_fields(),
+    )

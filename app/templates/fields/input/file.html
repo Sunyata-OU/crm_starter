@@ -1,0 +1,18 @@
+{% import "macros/fields.html" as m with context %}
+{%- set info = value|file_info -%}
+{% if info.key %}
+  <div class="file-current">
+    <a class="link" href="/files/{{ info.key }}">
+      <span aria-hidden="true">📎</span> {{ info.filename|default(info.key, true) }}
+    </a>
+    {% if info.size %}<span class="muted">{{ info.size|filesize }}</span>{% endif %}
+    {# Replacing is choosing a new file; this is how you remove without one. #}
+    <label class="file-clear">
+      <input type="checkbox" name="{{ field.name }}__clear" value="1">
+      Remove
+    </label>
+  </div>
+{% endif %}
+<input type="file" class="input" id="id_{{ field.name }}" name="{{ field.name }}"
+       {% if not bound.editable %}disabled{% endif %}>
+{% if info.key %}<p class="field-help">Choosing a file replaces the current one.</p>{% endif %}

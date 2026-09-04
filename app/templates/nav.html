@@ -1,0 +1,31 @@
+<nav class="sidebar" aria-label="Main">
+  <a class="brand" href="/">
+    <span class="brand-mark">◈</span>
+    <span class="brand-text">{{ app_name }}</span>
+  </a>
+
+  <ul class="nav-list">
+    <li>
+      <a href="/" class="nav-item {{ 'active' if current_path == '/' }}">
+        <span class="nav-icon">▤</span> Dashboard
+      </a>
+    </li>
+  </ul>
+
+  {% for group in menu %}
+    <div class="nav-group">
+      {% if group.label %}<div class="nav-group-label">{{ group.label }}</div>{% endif %}
+      <ul class="nav-list">
+        {% for item in group.sorted_items %}
+          <li>
+            <a href="{{ item.url }}"
+               class="nav-item {{ 'active' if current_path.startswith(item.url) }}">
+              <span class="nav-icon">{{ item.icon|default('▸', true) }}</span>
+              {{ item.label }}
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endfor %}
+</nav>

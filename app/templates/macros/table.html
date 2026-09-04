@@ -1,0 +1,109 @@
+{% import "macros/fields.html" as f with context %}
+
+{#
+  The list table.
+
+  Sort links and pagination preserve every other query parameter via the
+  `querystring` filter, so sorting a filtered, searched list does not silently
+  drop the filter or the search.
+#}
+{% macro sort_link(request, column, field, current_sort) %}
+  {%- set asc = column.field -%}
+  {%- set desc = '-' ~ column.field -%}
+  {%- set is_asc = current_sort == asc -%}
+  {%- set is_desc = current_sort == desc -%}
+  {%- set next = desc if is_asc else asc -%}
+  <a class="sort {{ 'sorted' if is_asc or is_desc }}"
+     href="{{ request|querystring(sort=next, page=None) }}"
+     hx-get="{{ request|querystring(sort=next, page=None) }}"
+     hx-target="#list-body" hx-push-url="true"
+     aria-label="Sort by {{ column.label or field.label }}{{ ' descending' if is_asc else ' ascending' }}">
+    {{ column.label or field.label }}
+    <span class="sort-mark" aria-hidden="true">{% if is_asc %}▲{% elif is_desc %}▼{% else %}⇅{% endif %}</span>
+  </a>
+{% endmacro %}
+
+{% macro table(resource, page, columns, spec, request, templates, can_update=false, current_sort='') %}
+<div class="table-wrap">
+  <table class="data-table">
+    <thead>
+      <tr>
+        {% if spec.bulk_actions %}
+          <th class="col-select">
+            <input type="checkbox" aria-label="Select all rows"
+                   onclick="crm.toggleAll(this)">
+          </th>
+        {% endif %}
+        {% for column in columns %}
+          {% set field = resource.field(column.field) %}
+          <th class="align-{{ column.align or field.align }}"
+              {% if column.width %}style="width:{{ column.width }}"{% endif %}>
+            {% if field.sortable and column.sortable != false %}
+              {{ sort_link(request, column, field, current_sort) }}
+            {% else %}
+              {{ column.label or field.label }}
+            {% endif %}
+          </th>
+        {% endfor %}
+        {% if spec.row_actions %}<th class="col-actions"><span class="sr-only">Actions</span></th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for record in page.items %}
+        <tr data-pk="{{ record.pk }}">
+          {% if spec.bulk_actions %}
+            <td class="col-select">
+              <input type="checkbox" name="selected" form="bulk-form" value="{{ record.pk }}"
+                     aria-label="Select this row">
+            </td>
+          {% endif %}
+          {% for column in columns %}
+            {% set field = resource.field(column.field) %}
+            {% set editable = can_update and field.inline_editable and spec.inline_edit %}
+            <td class="align-{{ column.align or field.align }} {{ 'editable' if editable }}"
+                {% if editable %}
+                  hx-get="/r/{{ resource.name }}/{{ record.pk }}/field/{{ field.name }}"
+                  hx-trigger="dblclick"
+                  hx-swap="outerHTML"
+                  title="Double-click to edit"
+                  tabindex="0"
+                  onkeydown="if(event.key==='Enter'){htmx.trigger(this,'dblclick')}"
+                {% endif %}>
+              {% if column.link and spec.row_link %}
+                <a href="/r/{{ resource.name }}/{{ record.pk }}" class="record-link">
+                  {{ f.display(resource, field, record, templates) }}
+                </a>
+              {% else %}
+                {{ f.display(resource, field, record, templates) }}
+              {% endif %}
+            </td>
+          {% endfor %}
+          {% if spec.row_actions %}
+            <td class="col-actions">
+              {% for name in spec.row_actions %}
+                {% set action = resource.actions.get(name) %}
+                {% if action and action.visible_for(record, identity) %}
+                  <button class="btn btn-sm {{ 'btn-danger' if action.style == 'danger' }}"
+                          hx-post="/r/{{ resource.name }}/{{ record.pk }}/action/{{ action.name }}"
+                          {% if action.confirm %}hx-confirm="{{ action.confirm }}"{% endif %}>
+                    {{ action.label }}
+                  </button>
+                {% endif %}
+              {% endfor %}
+            </td>
+          {% endif %}
+        </tr>
+      {% else %}
+        <tr class="empty-row">
+          <td colspan="{{ columns|length + (1 if spec.bulk_actions else 0) + (1 if spec.row_actions else 0) }}">
+            <div class="empty-state">
+              <p>{{ spec.empty_message }}</p>
+              {% if search_term %}<p class="muted">No matches for “{{ search_term }}”.</p>{% endif %}
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}

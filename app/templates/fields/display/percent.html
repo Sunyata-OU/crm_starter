@@ -1,0 +1,6 @@
+{% if value is not none and value != '' %}
+  <span class="percent">
+    <span class="percent-bar" style="--pct:{{ [[value|float, 0]|max, 100]|min }}%"></span>
+    <span class="num">{{ '{:.0f}%'.format(value|float) }}</span>
+  </span>
+{% else %}{{ ''|blank }}{% endif %}

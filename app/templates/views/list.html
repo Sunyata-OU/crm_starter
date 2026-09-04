@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ resource.label_plural }}{% endblock %}
+{% block heading %}{{ resource.label_plural }}{% endblock %}
+
+{% block topbar_actions %}
+  {% if can_create %}
+    {# A modal keeps the list's filters and scroll position, which navigating
+       away would lose. The href is kept so the button still works without
+       JavaScript, and so it can be opened in a new tab. #}
+    <a class="btn btn-primary"
+       href="/r/{{ resource.name }}/new"
+       {% if resource.view('form').modal %}
+         hx-get="/r/{{ resource.name }}/new?modal=1"
+         hx-target="#modal"
+         hx-swap="innerHTML"
+       {% endif %}>New {{ resource.label|lower }}</a>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+  {% include "views/_toolbar.html" %}
+  <div id="list-body">
+    {% include "views/_list_body.html" %}
+  </div>
+{% endblock %}

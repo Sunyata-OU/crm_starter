@@ -1,0 +1,56 @@
+{#
+  A record's history, read from the audit log.
+
+  Showing the before and after of each changed field is the point: "Kim changed
+  the stage" is far less useful than "Kim changed Stage from Proposal to Won".
+#}
+<ol class="timeline">
+  {% for entry in entries %}
+    <li class="timeline-entry timeline-{{ entry.action }}">
+      <div class="timeline-head">
+        <strong>{{ entry.actor }}</strong>
+        <span class="timeline-action">
+          {% if entry.action == 'create' %}created this
+          {% elif entry.action == 'delete' %}deleted this
+          {% else %}made a change
+          {% endif %}
+        </span>
+        {% if entry.status == 'pending' %}
+          <span class="pill pill-blue" title="Accepted but not confirmed">queued</span>
+        {% elif entry.status == 'error' %}
+          <span class="pill pill-red">failed</span>
+        {% endif %}
+      </div>
+
+      <div class="timeline-meta">
+        <time datetime="{{ entry.at }}" title="{{ entry.at|datetime }}">{{ entry.at|ago }}</time>
+      </div>
+
+      {% if entry.changes %}
+        <ul class="change-list">
+          {% for change in entry.changes[:8] %}
+            <li>
+              <span class="change-field">{{ change.label }}</span>
+              {% if entry.action == 'create' %}
+                <span class="change-after">{{ change.after|blank('empty') }}</span>
+              {% else %}
+                <span class="change-before">{{ change.before|blank('empty') }}</span>
+                <span class="change-arrow" aria-hidden="true">→</span>
+                <span class="change-after">{{ change.after|blank('empty') }}</span>
+              {% endif %}
+            </li>
+          {% endfor %}
+          {% if entry.changes|length > 8 %}
+            <li class="muted">and {{ entry.changes|length - 8 }} more</li>
+          {% endif %}
+        </ul>
+      {% elif entry.detail %}
+        <p class="muted">{{ entry.detail }}</p>
+      {% endif %}
+    </li>
+  {% else %}
+    <li class="muted timeline-empty">
+      No history yet. Changes made from here on will be recorded.
+    </li>
+  {% endfor %}
+</ol>

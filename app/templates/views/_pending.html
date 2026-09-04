@@ -1,0 +1,13 @@
+{#
+  A write the backend accepted but has not confirmed -- a queued message, or an
+  API that returned 202. Reporting this honestly matters: telling the user the
+  record was saved would be a lie the next page load would expose.
+#}
+<div class="alert alert-info pending-panel" role="status">
+  <strong>Queued.</strong>
+  <p>{{ message or 'The change has been accepted and will be applied shortly.' }}</p>
+  {% if result.correlation_id %}
+    <p class="muted">Reference <code>{{ result.correlation_id }}</code></p>
+  {% endif %}
+  <a class="btn btn-sm" href="/r/{{ resource.name }}">Back to {{ resource.label_plural|lower }}</a>
+</div>

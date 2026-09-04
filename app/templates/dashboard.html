@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block heading %}Dashboard{% endblock %}
+{% block content %}
+  <p class="lead">Welcome back, {{ identity.label }}.</p>
+  <div class="card-grid">
+    {% for card in cards %}
+      <a class="stat-card" href="/r/{{ card.resource.name }}">
+        <span class="stat-icon">{{ card.resource.icon }}</span>
+        <span class="stat-label">{{ card.resource.label_plural }}</span>
+        {% if card.error %}
+          {# One unreachable backend must not blank the dashboard. #}
+          <span class="stat-value stat-error" title="{{ card.error }}">unavailable</span>
+        {% else %}
+          <span class="stat-value">{{ '{:,}'.format(card.count) }}</span>
+        {% endif %}
+      </a>
+    {% else %}
+      <p class="muted">No resources are registered yet. Add a module under <code>modules/</code>.</p>
+    {% endfor %}
+  </div>
+{% endblock %}

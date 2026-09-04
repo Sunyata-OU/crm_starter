@@ -1,0 +1,6 @@
+{%- set choices = field.choices(none) -%}
+{%- set ns = namespace(label=value, color='') -%}
+{%- for c in choices %}{% if c.value == value %}{% set ns.label = c.label %}{% set ns.color = c.color %}{% endif %}{% endfor -%}
+{% if value is not none and value != '' %}
+  <span class="pill pill-{{ ns.color or 'default' }}">{{ ns.label }}</span>
+{% else %}{{ ''|blank }}{% endif %}

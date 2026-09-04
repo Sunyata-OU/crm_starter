@@ -1,0 +1,3 @@
+{% import "macros/fields.html" as m with context %}
+<input type="text" class="input" value="{{ value|duration if value is not none else '' }}"
+       placeholder="e.g. 90 or 1:30" {{ m.attrs(bound) }}>

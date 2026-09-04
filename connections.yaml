@@ -1,0 +1,87 @@
+# Named connections.
+#
+# Resources reference these as "<connection>#<target>", e.g. "db.main#contacts".
+# Values support ${VAR} and ${VAR:-default}, so credentials stay in the
+# environment and this file stays committable.
+
+connections:
+  db.main:
+    type: sqlalchemy
+    url: ${CRM_DATABASE_URL:-sqlite+aiosqlite:///./crm.db}
+    echo: ${CRM_SQL_ECHO:-false}
+    # Pool sizing, for anything that is not SQLite. A rough rule: pool_size
+    # should be at least the number of requests a worker handles at once, and
+    # pool_size + max_overflow across all workers must stay under the
+    # database's own connection limit.
+    pool_size: ${CRM_DB_POOL_SIZE:-10}
+    max_overflow: ${CRM_DB_MAX_OVERFLOW:-20}
+    # Below any proxy or database idle timeout, or a pooled connection is
+    # eventually handed out already dead.
+    pool_recycle: ${CRM_DB_POOL_RECYCLE:-1800}
+
+  # A shared cache. Off by default: the application must work without one, so
+  # caching is something you turn on rather than something you discover.
+  #
+  # `none` caches nothing. `memory` needs no service and is per worker, which
+  # is right for one process and a lie in a cluster -- four workers hold four
+  # copies. `redis` makes the cache mean the same thing on every host, which is
+  # what lets a permission change take effect everywhere at once rather than
+  # within its TTL. Timeout is short on purpose: a cache is not allowed to be
+  # the slow part of a request, so if it cannot answer quickly, doing the work
+  # is faster than waiting.
+  cache.main:
+    type: cache
+    backend: ${CRM_CACHE_BACKEND:-none}
+    url: ${CRM_REDIS_URL:-redis://localhost:6379/0}
+    default_ttl: 300
+    timeout: 1
+
+  # Where uploaded files go. Local disk is the default and needs nothing else
+  # installed; every other backend is the same three lines with a different
+  # `backend:`.
+  files:
+    type: files
+    backend: ${CRM_FILE_BACKEND:-local}
+    root: ${CRM_FILE_ROOT:-var/files}
+    limits:
+      max_mb: 25
+
+  # The same store on S3, MinIO, R2, Spaces or B2 -- they all speak the same
+  # API, so only the endpoint differs. Credentials are omitted deliberately
+  # where an instance role or the environment can supply them.
+  #
+  # files:
+  #   type: files
+  #   backend: s3
+  #   bucket: ${S3_BUCKET}
+  #   region: ${AWS_REGION:-eu-west-2}
+  #   endpoint_url: ${S3_ENDPOINT:-}      # set for MinIO, R2, Spaces
+  #   access_key: ${AWS_ACCESS_KEY_ID:-}
+  #   secret_key: ${AWS_SECRET_ACCESS_KEY:-}
+  #   prefix: crm
+  #   signed_urls: true                   # serve from the bucket, not this app
+  #   limits:
+  #     max_mb: 100
+
+  # A second database, to show that resources may live in different stores.
+  # Disabled by default so the demo runs with nothing else installed.
+  # db.analytics:
+  #   type: sqlalchemy
+  #   url: ${ANALYTICS_URL}
+  #   enabled: false
+
+  # A read-only HTTP backend. The capability shim supplies filtering, sorting
+  # and pagination that the endpoint itself does not offer.
+  # api.reference:
+  #   type: rest
+  #   base_url: ${REFERENCE_API_URL}
+  #   auth:
+  #     type: bearer
+  #     token: ${REFERENCE_API_TOKEN}
+
+  # Writes published as messages. Such a provider returns PENDING rather than a
+  # saved record, and the UI reports "queued" instead of claiming success.
+  # mq.events:
+  #   type: amqp
+  #   url: ${RABBITMQ_URL:-amqp://guest:guest@localhost/}
+  #   exchange: crm.commands

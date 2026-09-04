@@ -1,0 +1,13 @@
+{% import "macros/fields.html" as m with context %}
+{%- set info = value|file_info -%}
+{% if info.key %}
+  <div class="file-current">
+    <img class="thumb thumb-lg" src="/files/{{ info.key }}" alt="{{ info.filename }}">
+    <label class="file-clear">
+      <input type="checkbox" name="{{ field.name }}__clear" value="1">
+      Remove
+    </label>
+  </div>
+{% endif %}
+<input type="file" accept="image/*" class="input" id="id_{{ field.name }}" name="{{ field.name }}"
+       {% if not bound.editable %}disabled{% endif %}>

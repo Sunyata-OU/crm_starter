@@ -1,0 +1,14 @@
+{% import "macros/fields.html" as m with context %}
+{#
+  The hidden field is what makes clearing a checkbox work: an unchecked box
+  submits nothing, so without a paired "off" value the field could never be
+  turned back off in a partial update.
+#}
+<label class="switch">
+  <input type="hidden" name="{{ field.name }}" value="false">
+  <input type="checkbox" value="true" {% if value %}checked{% endif %}
+         id="id_{{ field.name }}" name="{{ field.name }}"
+         {% if not bound.editable %}disabled{% endif %}>
+  <span class="switch-track" aria-hidden="true"></span>
+  <span class="switch-label">{{ field.help or field.label }}</span>
+</label>

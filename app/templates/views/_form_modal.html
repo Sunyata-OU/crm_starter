@@ -1,0 +1,19 @@
+{#
+  A form in a dialog.
+
+  The form inside posts to the same URL as the full-page version and swaps
+  itself on failure, so validation errors land in the dialog rather than
+  replacing the page behind it.
+#}
+<div class="modal-backdrop" onclick="if (event.target === this) crm.closeModal()">
+  <div class="modal-dialog" role="dialog" aria-modal="true" aria-label="{{ title }}">
+    <header class="modal-head">
+      <h2>{{ title }}</h2>
+      <button class="icon-button" type="button" aria-label="Close"
+              onclick="crm.closeModal()">×</button>
+    </header>
+    <div class="modal-body">
+      {% include "views/_form_body.html" %}
+    </div>
+  </div>
+</div>

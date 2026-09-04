@@ -1,0 +1,2 @@
+{% import "macros/fields.html" as m with context %}
+<input type="date" class="input" value="{{ value|string|truncate_chars(10, '') if value else '' }}" {{ m.attrs(bound) }}>

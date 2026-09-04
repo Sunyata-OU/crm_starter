@@ -1,0 +1,2 @@
+{%- set symbol = field.options.get('symbol') or settings.currency_symbol -%}
+<span class="num money">{{ value|money(symbol) if value is not none and value != '' else (''|blank) }}</span>

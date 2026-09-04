@@ -1,0 +1,15 @@
+{#
+  A relation renders as a link to the target record.
+
+  The label comes from a provider-supplied `<field>_label` key if there is one
+  (a SQL provider may join it in). It must NOT fall back to
+  `record[relation.display]`: that name refers to a column on the *target*
+  resource, and reading it from this record picks up an unrelated column that
+  happens to share the name -- a contact's own `name` standing in for its
+  company's. Without a resolved label the key itself is shown, which is
+  accurate and still links correctly.
+#}
+{%- set label = record.get(field.name ~ '_label') -%}
+{% if value is not none and value != '' %}
+  <a href="/r/{{ field.relation.resource }}/{{ value }}" class="link relation">{{ label or ('#' ~ value) }}</a>
+{% else %}{{ ''|blank }}{% endif %}

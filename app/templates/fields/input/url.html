@@ -1,0 +1,2 @@
+{% import "macros/fields.html" as m with context %}
+<input type="url" class="input" value="{{ value|default('', true) }}" inputmode="url" {{ m.attrs(bound) }}>

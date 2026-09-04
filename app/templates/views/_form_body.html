@@ -1,0 +1,64 @@
+{% import "macros/fields.html" as f with context %}
+
+<form class="record-form" method="post" action="{{ action }}"
+      hx-post="{{ action }}" hx-target="closest .form-page, this" hx-swap="outerHTML"
+      enctype="multipart/form-data" novalidate>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  {% if form.summary %}
+    <div class="alert alert-error" role="alert">{{ form.summary }}</div>
+  {% endif %}
+
+  {% for section in spec.sections %}
+    <fieldset class="form-section" {% if section.collapsed %}data-collapsed{% endif %}>
+      {% if section.title %}<legend>{{ section.title }}</legend>{% endif %}
+      {% if section.description %}<p class="section-help">{{ section.description }}</p>{% endif %}
+      <div class="form-grid cols-{{ section.columns }}">
+        {% for name in section.fields %}
+          {% set bound = form.get(name) %}
+          {% if bound %}{{ f.field_row(resource, bound, templates, form) }}{% endif %}
+        {% endfor %}
+      </div>
+    </fieldset>
+  {% endfor %}
+
+  {% if spec.tabs %}
+    <div class="tabs" x-data="{ tab: 0 }">
+      <div class="tab-strip" role="tablist">
+        {% for tab in spec.tabs %}
+          <button type="button" role="tab" class="tab" :class="{active: tab === {{ loop.index0 }}}"
+                  @click="tab = {{ loop.index0 }}" :aria-selected="tab === {{ loop.index0 }}">{{ tab.title }}</button>
+        {% endfor %}
+      </div>
+      {% for tab in spec.tabs %}
+        <div class="tab-panel" role="tabpanel" x-show="tab === {{ loop.index0 }}">
+          {% for section in tab.sections %}
+            <fieldset class="form-section">
+              {% if section.title %}<legend>{{ section.title }}</legend>{% endif %}
+              <div class="form-grid cols-{{ section.columns }}">
+                {% for name in section.fields %}
+                  {% set bound = form.get(name) %}
+                  {% if bound %}{{ f.field_row(resource, bound, templates, form) }}{% endif %}
+                {% endfor %}
+              </div>
+            </fieldset>
+          {% endfor %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">{{ spec.submit_label }}</button>
+    <a class="btn" href="{{ '/r/' ~ resource.name ~ '/' ~ record.pk if record else '/r/' ~ resource.name }}">Cancel</a>
+    {% if record and resource.can('delete', identity, record) %}
+      <button type="submit" class="btn btn-danger form-delete"
+              formaction="/r/{{ resource.name }}/{{ record.pk }}/delete"
+              formnovalidate
+              hx-post="/r/{{ resource.name }}/{{ record.pk }}/delete"
+              hx-confirm="Delete this {{ resource.label|lower }}? This cannot be undone.">
+        Delete
+      </button>
+    {% endif %}
+  </div>
+</form>

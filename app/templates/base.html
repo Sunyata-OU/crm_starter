@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en" data-theme="{{ request.cookies.get('theme', 'light') }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ title|default(app_name) }}{% endblock %} · {{ app_name }}</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>◈</text></svg>">
+  <link rel="stylesheet" href="/static/crm.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/alpine.min.js" defer></script>
+  <script src="/static/crm.js" defer></script>
+</head>
+<body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
+
+<a class="skip-link" href="#main">Skip to content</a>
+
+<div class="shell">
+  {% block sidebar %}
+    {% include "nav.html" %}
+  {% endblock %}
+
+  <div class="main-column">
+    {% block topbar %}
+      <header class="topbar">
+        <button class="icon-button nav-toggle" aria-label="Toggle navigation"
+                onclick="document.body.classList.toggle('nav-open')">☰</button>
+        <div class="topbar-title">{% block heading %}{{ title|default('') }}{% endblock %}</div>
+        <div class="topbar-actions">{% block topbar_actions %}{% endblock %}</div>
+        {% if identity and identity.is_authenticated %}
+          <div class="bell-wrap">
+            {# Polls, and re-checks whenever a write announces itself. #}
+            <span hx-get="/notifications/count"
+                  hx-trigger="load, every 60s, crm:refresh:notifications from:body"
+                  hx-swap="innerHTML"></span>
+            <div id="notification-panel" class="notification-panel" hidden></div>
+          </div>
+          <details class="user-menu">
+            <summary aria-label="Account menu"><span class="avatar">{{ identity.initials }}</span></summary>
+            <div class="menu-panel">
+              <div class="menu-header">
+                <strong>{{ identity.label }}</strong>
+                {% if identity.email %}<span class="muted">{{ identity.email }}</span>{% endif %}
+                {% if identity.roles %}<span class="muted">{{ identity.roles|sort|join(', ') }}</span>{% endif %}
+              </div>
+              {% if password_manager and password_manager.capabilities.change %}
+                <a href="/account/password">Password</a>
+              {% endif %}
+              {% if identity.has_role('admin') %}<a href="/system">System</a>{% endif %}
+              <form method="post" action="/logout">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="linklike">Sign out</button>
+              </form>
+            </div>
+          </details>
+        {% endif %}
+      </header>
+    {% endblock %}
+
+    <main id="main" class="content">
+      {# Messages from the request that redirected here. Rendered in the page
+         rather than as a toast: they arrived with a navigation, and something
+         that fades after three seconds is the wrong home for "your password
+         has been changed" or a one-time password nobody can look up again. #}
+      {% for flash in flashes %}
+        <div class="alert alert-{{ flash.level }}" role="{{ 'alert' if flash.is_error else 'status' }}">
+          {{ flash.text }}
+        </div>
+      {% endfor %}
+
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+
+<div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+<div id="modal" class="modal" hidden></div>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

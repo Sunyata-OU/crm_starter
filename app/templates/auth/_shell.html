@@ -1,0 +1,25 @@
+{# The frame every signed-out screen shares: sign in, forgot, reset.
+   Kept separate from base.html because none of these have a navigation to
+   render -- there is nobody signed in to build one for. #}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block heading_title %}{{ self.heading() }}{% endblock %} · {{ app_name }}</title>
+  <link rel="stylesheet" href="/static/crm.css">
+</head>
+<body class="auth-body">
+  <main class="auth-card">
+    <div class="auth-brand"><span class="brand-mark">◈</span> {{ app_name }}</div>
+    <h1>{% block heading %}{% endblock %}</h1>
+
+    {% for flash in flashes %}
+      <div class="alert alert-{{ flash.level }}" role="status">{{ flash.text }}</div>
+    {% endfor %}
+    {% if error %}<div class="alert alert-error" role="alert">{{ error }}</div>{% endif %}
+
+    {% block card %}{% endblock %}
+  </main>
+</body>
+</html>

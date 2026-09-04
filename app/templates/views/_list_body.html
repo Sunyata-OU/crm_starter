@@ -1,0 +1,25 @@
+{% import "macros/table.html" as t with context %}
+{% import "macros/pagination.html" as p with context %}
+
+{% if spec.bulk_actions %}
+  <form id="bulk-form" class="bulk-bar" method="post"
+        action="/r/{{ resource.name }}/bulk/delete">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <span class="bulk-count" data-bulk-count>0 selected</span>
+    {% for name in spec.bulk_actions %}
+      {% set action = resource.actions.get(name) %}
+      <button class="btn btn-sm {{ 'btn-danger' if name == 'delete' or (action and action.style == 'danger') }}"
+              type="submit"
+              formaction="/r/{{ resource.name }}/bulk/{{ name }}"
+              {% if name == 'delete' %}onclick="return confirm('Delete the selected records?')"{% endif %}>
+        {{ action.label if action else name|capitalize }}
+      </button>
+    {% endfor %}
+  </form>
+{% endif %}
+
+{{ t.table(resource, page, columns, spec, request, templates,
+           can_update=resource.can('update', identity),
+           current_sort=request.query_params.get('sort', '')) }}
+
+{{ p.pagination(page, request) }}

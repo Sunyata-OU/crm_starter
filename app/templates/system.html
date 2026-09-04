@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}System{% endblock %}
+{% block heading %}System{% endblock %}
+{% block content %}
+
+<section class="card">
+  <h2 class="card-title">Connections</h2>
+  <table class="data-table">
+    <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for c in connections %}
+        <tr>
+          <td><code>{{ c.name }}</code></td>
+          <td>{{ c.type }}</td>
+          <td><span class="pill pill-{{ 'green' if c.healthy else 'red' }}">{{ 'healthy' if c.healthy else 'failing' }}</span></td>
+          <td class="muted">{{ c.detail }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="muted">None configured.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2 class="card-title">Authentication chain</h2>
+  <p class="section-help">Tried in this order; the first to return an identity wins.</p>
+  <ol class="chain-list">
+    {% for name, healthy, detail in auth_health %}
+      <li>
+        <code>{{ name }}</code>
+        <span class="pill pill-{{ 'green' if healthy else 'amber' }}">{{ 'ok' if healthy else 'check' }}</span>
+        <span class="muted">{{ detail }}</span>
+      </li>
+    {% endfor %}
+  </ol>
+</section>
+
+<section class="card">
+  <h2 class="card-title">Resources and backend capabilities</h2>
+  <p class="section-help">
+    “Emulated” means the backend cannot do that operation itself and the shim is
+    doing it in memory. That is correct but costs a wider read, so it is worth
+    knowing where it happens.
+  </p>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Resource</th><th>Provider</th><th>Filter</th><th>Sort</th>
+        <th>Page</th><th>Count</th><th>Aggregate</th><th>Writes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in resources %}
+        {% set native = entry.native %}
+        <tr>
+          <td><a class="link" href="/r/{{ entry.resource.name }}">{{ entry.resource.label_plural }}</a></td>
+          <td><code>{{ entry.provider }}</code></td>
+          {% for attr in ['server_filter', 'server_sort', 'server_paginate', 'total_count', 'aggregate'] %}
+            <td>
+              {% if native and native[attr] %}
+                <span class="pill pill-green">native</span>
+              {% else %}
+                <span class="pill pill-amber">emulated</span>
+              {% endif %}
+            </td>
+          {% endfor %}
+          <td>
+            {% if entry.capabilities and entry.capabilities.writable %}
+              <span class="pill pill-{{ 'blue' if entry.capabilities.is_async_write else 'green' }}">
+                {{ 'queued' if entry.capabilities.is_async_write else 'direct' }}
+              </span>
+            {% else %}
+              <span class="pill pill-default">read only</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

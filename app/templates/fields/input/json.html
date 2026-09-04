@@ -1,0 +1,2 @@
+{% import "macros/fields.html" as m with context %}
+<textarea class="input mono" rows="6" spellcheck="false" {{ m.attrs(bound) }}>{{ value|tojson(indent=2) if value is mapping or (value is iterable and value is not string) else (value|default('', true)) }}</textarea>

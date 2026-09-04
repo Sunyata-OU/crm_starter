@@ -1,0 +1,2 @@
+{% import "macros/fields.html" as m with context %}
+<input type="time" class="input" value="{{ value|default('', true) }}" {{ m.attrs(bound) }}>

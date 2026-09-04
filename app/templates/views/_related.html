@@ -1,0 +1,48 @@
+{#
+  One embedded list of records pointing back at this one.
+  Rendered by querying the *other* resource through its own provider, so a
+  relation across two backends works without a join.
+#}
+{% import "macros/fields.html" as rf with context %}
+{% set target = entry.resource %}
+<div class="related-header">
+  <h2 class="card-title">{{ entry.field.label }}</h2>
+  {% if target.can('create', identity) %}
+    <a class="btn btn-sm" href="/r/{{ target.name }}/new?with.{{ entry.field.via }}={{ record.pk }}">
+      Add {{ target.label|lower }}
+    </a>
+  {% endif %}
+</div>
+
+{% if entry.page.items %}
+  <table class="data-table compact">
+    <thead>
+      <tr>{% for name in entry.columns %}<th>{{ target.field(name).label }}</th>{% endfor %}</tr>
+    </thead>
+    <tbody>
+      {% for row in entry.page.items %}
+        <tr>
+          {% for name in entry.columns %}
+            {% set field = target.field(name) %}
+            <td class="align-{{ field.align }}">
+              {% if loop.first %}
+                <a class="record-link" href="/r/{{ target.name }}/{{ row.pk }}">
+                  {{ rf.display(target, field, row, templates) }}
+                </a>
+              {% else %}
+                {{ rf.display(target, field, row, templates) }}
+              {% endif %}
+            </td>
+          {% endfor %}
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if entry.page.total and entry.page.total > entry.page.items|length %}
+    <a class="link" href="/r/{{ target.name }}?f.{{ entry.field.via }}={{ record.pk }}">
+      See all {{ entry.page.total }}
+    </a>
+  {% endif %}
+{% else %}
+  <p class="muted">No {{ target.label_plural|lower }} yet.</p>
+{% endif %}

@@ -1,0 +1,4 @@
+{% if value %}
+  <span class="swatch" style="--swatch:{{ value }}" title="{{ value }}"></span>
+  <span class="muted">{{ value }}</span>
+{% else %}{{ ''|blank }}{% endif %}

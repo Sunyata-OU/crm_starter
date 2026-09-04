@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% import "macros/fields.html" as f with context %}
+{% block title %}{{ resource.label_plural }}{% endblock %}
+{% block heading %}{{ resource.label_plural }}{% endblock %}
+
+{% block topbar_actions %}
+  {% if resource.can('create', identity) %}
+    <a class="btn btn-primary" href="/r/{{ resource.name }}/new">New {{ resource.label|lower }}</a>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+  {% include "views/_toolbar.html" %}
+
+  {#
+    Dragging a card writes the new group value straight through the provider.
+    The board is only draggable when the resource is actually updatable, so it
+    never offers a gesture that will fail.
+  #}
+  <div class="board" data-board {% if spec.draggable and can_update %}data-draggable{% endif %}>
+    {% for column in columns %}
+      <section class="board-column" data-value="{{ column.choice.value }}"
+               aria-label="{{ column.choice.label }}">
+        <header class="board-head pill-{{ column.choice.color or 'default' }}">
+          <h2>{{ column.choice.label }}</h2>
+          <span class="board-count">{{ column.count if column.count is not none else column.page.items|length }}</span>
+          {% if column.sum is not none %}
+            <span class="board-sum">{{ column.sum|money }}</span>
+          {% endif %}
+        </header>
+
+        <div class="board-cards"
+             data-group-field="{{ spec.group_by }}"
+             data-group-value="{{ column.choice.value }}"
+             data-post-url="/r/{{ resource.name }}">
+          {% for record in column.page.items %}
+            {% set card = spec.card %}
+            <article class="board-card" draggable="{{ 'true' if spec.draggable and can_update else 'false' }}"
+                     data-pk="{{ record.pk }}">
+              <a class="board-card-link" href="/r/{{ resource.name }}/{{ record.pk }}">
+                <h3>{{ f.display(resource, resource.field(card.title), record, templates) }}</h3>
+                {% if card.subtitle %}
+                  <p class="board-card-sub">{{ f.display(resource, resource.field(card.subtitle), record, templates) }}</p>
+                {% endif %}
+                {% if card.body %}
+                  <p class="board-card-body">{{ f.display(resource, resource.field(card.body), record, templates) }}</p>
+                {% endif %}
+              </a>
+              {% if card.badges %}
+                <div class="board-card-badges">
+                  {% for name in card.badges %}
+                    <span class="badge">{{ f.display(resource, resource.field(name), record, templates) }}</span>
+                  {% endfor %}
+                </div>
+              {% endif %}
+            </article>
+          {% else %}
+            <p class="board-empty muted">Nothing here</p>
+          {% endfor %}
+        </div>
+      </section>
+    {% endfor %}
+  </div>
+  <form id="board-form" hidden><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+{% endblock %}

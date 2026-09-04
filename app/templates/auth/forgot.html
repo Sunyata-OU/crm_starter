@@ -1,0 +1,23 @@
+{% extends "auth/_shell.html" %}
+{% block heading %}Reset your password{% endblock %}
+{% block card %}
+  {% if sent %}
+    {# Deliberately the same answer whether or not the address has an account:
+       this form must not be usable to find out who has one. #}
+    <p class="muted">
+      If that address has an account, a link to choose a new password is on its
+      way. It expires within the hour and works once.
+    </p>
+    <p><a class="btn btn-block" href="/login">Back to sign in</a></p>
+  {% else %}
+    <p class="muted">Enter your email address and we will send you a link.</p>
+    <form method="post" action="/forgot" class="auth-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="username">Email</label>
+      <input class="input" id="username" name="username" type="email" required
+             autocomplete="username" autofocus>
+      <button class="btn btn-primary btn-block" type="submit">Send the link</button>
+    </form>
+    <p class="auth-alt"><a href="/login">Back to sign in</a></p>
+  {% endif %}
+{% endblock %}

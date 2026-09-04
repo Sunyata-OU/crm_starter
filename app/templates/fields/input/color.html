@@ -1,0 +1,6 @@
+{% import "macros/fields.html" as m with context %}
+<span class="color-input">
+  <input type="color" value="{{ value|default('#666666', true) }}" id="id_{{ field.name }}" name="{{ field.name }}"
+         {% if not bound.editable %}disabled{% endif %}>
+  <output>{{ value|default('', true) }}</output>
+</span>

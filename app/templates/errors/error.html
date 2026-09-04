@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block sidebar %}{% endblock %}
+{% block topbar %}{% endblock %}
+{% block content %}
+  <div class="error-page">
+    <p class="error-status">{{ status }}</p>
+    <h1>{{ title }}</h1>
+    <p class="error-message">{{ message }}</p>
+    <div class="error-actions">
+      <a class="btn btn-primary" href="/">Back to dashboard</a>
+      <button class="btn" onclick="history.back()">Go back</button>
+    </div>
+  </div>
+{% endblock %}

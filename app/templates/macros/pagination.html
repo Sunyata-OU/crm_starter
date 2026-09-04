@@ -1,0 +1,42 @@
+{#
+  Pagination that works whether or not the backend can count.
+
+  A provider that cannot produce a total still reports whether another page
+  exists, so the control degrades to prev/next rather than disappearing.
+#}
+{% macro pagination(page, request, target='#list-body') %}
+  {% if page.has_prev or page.has_next %}
+  <nav class="pagination" aria-label="Pagination">
+    <div class="page-info">
+      {% if page.total is not none %}
+        Showing <strong>{{ page.start_index }}–{{ page.end_index }}</strong> of
+        <strong>{{ page.total }}</strong>
+      {% else %}
+        Showing <strong>{{ page.start_index }}–{{ page.end_index }}</strong>
+      {% endif %}
+    </div>
+
+    <div class="page-controls">
+      <a class="btn btn-sm {{ 'disabled' if not page.has_prev }}"
+         {% if page.has_prev %}
+           href="{{ request|querystring(page=page.page - 1) }}"
+           hx-get="{{ request|querystring(page=page.page - 1) }}"
+           hx-target="{{ target }}" hx-push-url="true"
+         {% else %}aria-disabled="true"{% endif %}>← Previous</a>
+
+      {% if page.total_pages %}
+        <span class="page-of">Page {{ page.page }} of {{ page.total_pages }}</span>
+      {% else %}
+        <span class="page-of">Page {{ page.page }}</span>
+      {% endif %}
+
+      <a class="btn btn-sm {{ 'disabled' if not page.has_next }}"
+         {% if page.has_next %}
+           href="{{ request|querystring(page=page.page + 1) }}"
+           hx-get="{{ request|querystring(page=page.page + 1) }}"
+           hx-target="{{ target }}" hx-push-url="true"
+         {% else %}aria-disabled="true"{% endif %}>Next →</a>
+    </div>
+  </nav>
+  {% endif %}
+{% endmacro %}

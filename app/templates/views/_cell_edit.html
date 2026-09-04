@@ -1,0 +1,19 @@
+{#
+  A table cell swapped into edit mode.
+  Escape restores the display cell; blur and Enter both save, which is what
+  people expect from a spreadsheet-style grid.
+#}
+{% import "macros/fields.html" as f with context %}
+<td class="cell-editing {{ 'has-error' if bound.has_error }}">
+  <form hx-post="/r/{{ resource.name }}/{{ record.pk }}/field/{{ bound.field.name }}"
+        hx-target="closest td" hx-swap="outerHTML"
+        hx-trigger="submit, change from:find select, blur from:find input delay:100ms">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ f.input(resource, bound, templates) }}
+    {% if bound.has_error %}<span class="cell-error" role="alert">{{ bound.error }}</span>{% endif %}
+    <button type="button" class="cell-cancel" aria-label="Cancel"
+            hx-get="/r/{{ resource.name }}/{{ record.pk }}/field/{{ bound.field.name }}?cancel=1"
+            hx-target="closest td" hx-swap="outerHTML">×</button>
+  </form>
+  <script>crm.focusCell(document.currentScript.closest('td'));</script>
+</td>

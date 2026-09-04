@@ -1,0 +1,14 @@
+{#
+  The bell and its count. Polls every 60 seconds and after any write, which is
+  what the crm:refresh:notifications event is for.
+#}
+<button class="icon-button bell {{ 'has-unread' if count }}"
+        type="button"
+        aria-label="{{ count }} unread notification{{ '' if count == 1 else 's' }}"
+        hx-get="/notifications"
+        hx-target="#notification-panel"
+        hx-swap="innerHTML"
+        onclick="document.getElementById('notification-panel').toggleAttribute('hidden')">
+  <span aria-hidden="true">◔</span>
+  {% if count %}<span class="bell-count">{{ count if count < 100 else '99+' }}</span>{% endif %}
+</button>

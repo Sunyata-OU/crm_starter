@@ -1,0 +1,6 @@
+{%- set info = value|file_info -%}
+{% if info.key %}
+  <a href="/files/{{ info.key }}" class="image-link" title="{{ info.filename }}">
+    <img class="thumb" src="/files/{{ info.key }}" alt="{{ info.filename }}" loading="lazy">
+  </a>
+{% else %}{{ ''|blank }}{% endif %}

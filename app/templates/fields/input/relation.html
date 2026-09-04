@@ -1,0 +1,17 @@
+{% import "macros/fields.html" as m with context %}
+{#
+  A typeahead served by the *target* resource, so a relation spanning two
+  different backends needs no join -- each side answers through its own
+  provider. The datalist degrades to a plain text box without JavaScript.
+#}
+<input class="input" list="opts_{{ field.name }}"
+       value="{{ value if value is not none else '' }}"
+       autocomplete="off"
+       placeholder="Search {{ field.relation.resource }}…"
+       hx-get="/r/{{ field.relation.resource }}/options"
+       hx-trigger="input changed delay:250ms, focus once"
+       hx-target="#opts_{{ field.name }}"
+       hx-params="q"
+       hx-vals='js:{q: event.target.value}'
+       {{ m.attrs(bound) }}>
+<datalist id="opts_{{ field.name }}"></datalist>

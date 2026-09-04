@@ -1,0 +1,17 @@
+{% extends "auth/_shell.html" %}
+{% block heading %}Choose a new password{% endblock %}
+{% block card %}
+  <form method="post" action="/reset" class="auth-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="token" value="{{ token }}">
+    <label for="new_password">New password</label>
+    <input class="input" id="new_password" name="new_password" type="password" required
+           autocomplete="new-password" autofocus minlength="{{ settings.password_min_length }}">
+    <label for="confirm_password">Confirm it</label>
+    <input class="input" id="confirm_password" name="confirm_password" type="password" required
+           autocomplete="new-password">
+    <p class="field-help">At least {{ settings.password_min_length }} characters. Length
+      matters more than punctuation — a few unrelated words beat one clever substitution.</p>
+    <button class="btn btn-primary btn-block" type="submit">Set the password</button>
+  </form>
+{% endblock %}

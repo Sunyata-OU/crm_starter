@@ -1,0 +1,7 @@
+{% import "macros/fields.html" as m with context %}
+{#
+  A plain textarea rather than a rich editor. Shipping an editor would mean
+  shipping an HTML sanitiser to match it; a project that wants one should
+  override this partial and sanitise on the way in.
+#}
+<textarea class="input mono" rows="{{ field.rows|default(8) }}" {{ m.attrs(bound) }}>{{ value|default('', true) }}</textarea>

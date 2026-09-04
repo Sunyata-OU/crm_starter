@@ -1,0 +1,6 @@
+{% if value %}
+  <a href="{{ value }}" class="link" target="_blank" rel="noopener noreferrer">
+    {{ value|replace('https://','')|replace('http://','')|truncate_chars(40) }}
+    <span aria-hidden="true">↗</span>
+  </a>
+{% else %}{{ ''|blank }}{% endif %}

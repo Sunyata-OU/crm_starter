@@ -1,0 +1,12 @@
+{% import "macros/fields.html" as m with context %}
+{#
+  An instant, shown in the reader's zone.
+
+  The browser's datetime-local input has no notion of zone, so the value is
+  converted here and the offset labelled beside it -- otherwise someone in
+  Tokyo would be editing a UTC reading with nothing saying so. What comes back
+  is interpreted in the same zone on the way in.
+#}
+<input type="datetime-local" class="input"
+       value="{{ value|local_input }}" {{ m.attrs(bound) }}>
+<span class="tz-hint muted" title="Times are shown in your timezone">{{ timezone }}</span>

@@ -1,0 +1,94 @@
+{#
+  Search, view switcher, filters and export.
+  The search box targets #list-body so typing does not reload the page or
+  lose focus.
+#}
+<div class="toolbar">
+  <form class="search" role="search"
+        hx-get="/r/{{ resource.name }}"
+        hx-target="#list-body" hx-push-url="true"
+        hx-trigger="input from:find input delay:300ms, submit">
+    <input type="search" name="q" value="{{ search_term|default('') }}"
+           placeholder="{{ resource.search.placeholder }} {{ resource.label_plural|lower }}…"
+           aria-label="Search {{ resource.label_plural }}" autocomplete="off">
+    {% if current_view and current_view != 'list' %}
+      <input type="hidden" name="view" value="{{ current_view }}">
+    {% endif %}
+  </form>
+
+  {% if views|length > 1 %}
+    <div class="view-switch" role="tablist" aria-label="View">
+      {% for v in views %}
+        <a role="tab" aria-selected="{{ 'true' if v.name == current_view else 'false' }}"
+           class="view-tab {{ 'active' if v.name == current_view }}"
+           href="{{ request|querystring(view=v.name, page=None) }}">{{ v.label }}</a>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {% if resource.search.quick_filters %}
+    {# One-click filters. The active one is a link back to the unfiltered
+       list, so clicking it again clears it. #}
+    <div class="quick-filters" role="group" aria-label="Quick filters">
+      {% set active = request.query_params.get('quick', '') %}
+      {% for chip in resource.search.quick_filters %}
+        <a class="quick-chip {{ 'active' if chip.name == active }}"
+           href="{{ request|querystring(quick=(None if chip.name == active else chip.name), page=None) }}"
+           {% if chip.description %}title="{{ chip.description }}"{% endif %}>
+          {% if chip.icon %}<span aria-hidden="true">{{ chip.icon }}</span>{% endif %}
+          {{ chip.label }}
+        </a>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <div class="toolbar-right">
+    {% if resource.filterable_fields() %}
+      <details class="filter-panel">
+        <summary class="btn btn-sm">Filters {% if chips %}<span class="badge">{{ chips|length }}</span>{% endif %}</summary>
+        <form class="filter-form" method="get" action="/r/{{ resource.name }}">
+          {% if current_view and current_view != 'list' %}<input type="hidden" name="view" value="{{ current_view }}">{% endif %}
+          {% if search_term %}<input type="hidden" name="q" value="{{ search_term }}">{% endif %}
+          {% for field in resource.filterable_fields() %}
+            <label class="filter-row">
+              <span>{{ field.label }}</span>
+              {% set choices = field.choices(none) %}
+              {% if choices %}
+                <select name="f.{{ field.name }}">
+                  <option value="">Any</option>
+                  {% for c in choices %}
+                    <option value="{{ c.value }}"
+                      {% if request.query_params.get('f.' ~ field.name) == c.value|string %}selected{% endif %}>{{ c.label }}</option>
+                  {% endfor %}
+                </select>
+              {% else %}
+                <input type="text" name="f.{{ field.name }}__icontains"
+                       value="{{ request.query_params.get('f.' ~ field.name ~ '__icontains', '') }}">
+              {% endif %}
+            </label>
+          {% endfor %}
+          <div class="filter-actions">
+            <button class="btn btn-primary btn-sm" type="submit">Apply</button>
+            <a class="btn btn-sm" href="/r/{{ resource.name }}">Clear</a>
+          </div>
+        </form>
+      </details>
+    {% endif %}
+    <a class="btn btn-sm" href="/r/{{ resource.name }}/export.csv{{ request|querystring() }}"
+       title="Download the current view as CSV">Export</a>
+  </div>
+</div>
+
+{% if chips %}
+  <div class="chips" aria-label="Active filters">
+    {% for chip in chips %}
+      <a class="chip" href="{{ request|querystring(**{chip.key: None}) }}">
+        <span class="chip-label">{{ chip.label }} {{ chip.op_label }}</span>
+        <strong>{{ chip.value or '—' }}</strong>
+        <span class="chip-x" aria-hidden="true">×</span>
+        <span class="sr-only">Remove this filter</span>
+      </a>
+    {% endfor %}
+    <a class="chip chip-clear" href="/r/{{ resource.name }}">Clear all</a>
+  </div>
+{% endif %}

@@ -1,0 +1,8 @@
+{#
+  Show a choice's label rather than its stored value.
+  `choices` is called with no context, which is enough for a static list; a
+  resource whose options come from a lookup should override this partial.
+#}
+{%- set ns = namespace(label=value) -%}
+{%- for c in field.choices(none) %}{% if c.value == value %}{% set ns.label = c.label %}{% endif %}{% endfor -%}
+{{ ns.label|blank }}

@@ -1,0 +1,33 @@
+<div class="notification-list">
+  <div class="notification-head">
+    <strong>Notifications</strong>
+    {% if entries %}
+      <form hx-post="/notifications/read-all" hx-target="#notification-panel" hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="linklike" type="submit">Clear all</button>
+      </form>
+    {% endif %}
+  </div>
+
+  {% for entry in entries %}
+    <article class="notification kind-{{ entry.kind }}">
+      <a class="notification-body" href="{{ entry.url or '#' }}">
+        <span class="notification-title">{{ entry.title }}</span>
+        {% if entry.body %}<span class="notification-text">{{ entry.body|truncate_chars(90) }}</span>{% endif %}
+        <span class="notification-meta">
+          <time datetime="{{ entry.created_at }}">{{ entry.created_at|ago }}</time>
+          {% if entry.priority in ('high', 'urgent') %}
+            <span class="pill pill-{{ 'red' if entry.priority == 'urgent' else 'amber' }}">{{ entry.priority }}</span>
+          {% endif %}
+        </span>
+      </a>
+      <form hx-post="/notifications/{{ entry.pk }}/read"
+            hx-target="#notification-panel" hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="notification-dismiss" type="submit" aria-label="Dismiss">×</button>
+      </form>
+    </article>
+  {% else %}
+    <p class="notification-empty muted">Nothing waiting.</p>
+  {% endfor %}
+</div>

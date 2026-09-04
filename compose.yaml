@@ -1,0 +1,129 @@
+# A working stack: the application, PostgreSQL, and the pieces the optional
+# providers need. `docker compose up` gives a seeded CRM on port 8000.
+#
+# Everything except `app` and `db` is behind a profile, so the default start is
+# small. Add them with, for example:
+#
+#   docker compose --profile storage --profile queue up
+
+name: crm-starter
+
+services:
+  app:
+    build: .
+    ports:
+      - "${CRM_PORT:-8000}:8000"
+    environment:
+      CRM_ENVIRONMENT: development
+      CRM_DEBUG: "true"
+      # A fixed key so sessions survive a restart. Generate a real one for
+      # anything that is not a local demo.
+      CRM_SECRET_KEY: ${CRM_SECRET_KEY:-development-only-key-change-me-please}
+      CRM_DATABASE_URL: postgresql+asyncpg://crm:crm@db:5432/crm
+      # The demo modules, so there is something to look at. Remove this line
+      # and you get the platform on its own, which is where a real project
+      # starts. Keep it in step with the seed service below: the two must
+      # agree, or the schema and the sample data will not match.
+      CRM_MODULES: ${CRM_MODULES:-demo_crm,demo_sales}
+      CRM_FILE_ROOT: /app/var/files
+      CRM_NOTIFY_CHANNELS: inapp,console
+      CRM_NOTIFY_BASE_URL: http://localhost:${CRM_PORT:-8000}
+    volumes:
+      # Uploads outlive the container.
+      - files:/app/var/files
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: crm
+      POSTGRES_DB: crm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # The application waits for this, so it must mean "ready for queries",
+      # not merely "the process started".
+      test: ["CMD-SHELL", "pg_isready -U crm -d crm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot: create the schema and load the sample data.
+  #   docker compose run --rm seed
+  seed:
+    build: .
+    profiles: ["setup"]
+    environment:
+      CRM_DATABASE_URL: postgresql+asyncpg://crm:crm@db:5432/crm
+      CRM_MODULES: ${CRM_MODULES:-demo_crm,demo_sales}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["crm", "seed"]
+
+  # Delivers reminders that have come due. A real deployment runs this from
+  # cron or a scheduler; here it is a loop so the demo shows it working.
+  notifier:
+    build: .
+    profiles: ["notify"]
+    environment:
+      CRM_DATABASE_URL: postgresql+asyncpg://crm:crm@db:5432/crm
+      CRM_MODULES: ${CRM_MODULES:-demo_crm,demo_sales}
+      CRM_NOTIFY_CHANNELS: inapp,console
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["while true; do crm notify-due; sleep 60; done"]
+    restart: unless-stopped
+
+  # S3-compatible storage, for trying the S3 file backend without an AWS
+  # account. Console on :9001, credentials minioadmin / minioadmin.
+  minio:
+    image: minio/minio:latest
+    profiles: ["storage"]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    profiles: ["queue"]
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Catches outgoing mail so the email channel can be tried without sending
+  # anything. Web interface on :8025.
+  mailpit:
+    image: axllent/mailpit:latest
+    profiles: ["mail"]
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+
+volumes:
+  pgdata:
+  files:
+  miniodata:

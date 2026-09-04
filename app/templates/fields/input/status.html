@@ -1,0 +1,9 @@
+{% import "macros/fields.html" as m with context %}
+<select class="input" {{ m.attrs(bound) }}>
+  {% if not field.required %}<option value="">—</option>{% endif %}
+  {% for choice in field.choices(none) %}
+    <option value="{{ choice.value }}" {% if choice.value|string == value|string %}selected{% endif %}>
+      {{ choice.label }}
+    </option>
+  {% endfor %}
+</select>

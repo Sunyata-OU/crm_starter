@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}{{ resource.label_plural }}{% endblock %}
+{% block heading %}{{ resource.label_plural }}{% endblock %}
+
+{% block content %}
+  {% include "views/_toolbar.html" %}
+
+  <div class="calendar-nav">
+    {% set prev_m = 12 if month == 1 else month - 1 %}
+    {% set prev_y = year - 1 if month == 1 else year %}
+    {% set next_m = 1 if month == 12 else month + 1 %}
+    {% set next_y = year + 1 if month == 12 else year %}
+    <a class="btn btn-sm" href="{{ request|querystring(year=prev_y, month=prev_m) }}">← Previous</a>
+    <h2 class="calendar-title">{{ '%04d-%02d'|format(year, month) }}</h2>
+    <a class="btn btn-sm" href="{{ request|querystring(year=next_y, month=next_m) }}">Next →</a>
+    <a class="btn btn-sm" href="{{ request|querystring(year=None, month=None) }}">Today</a>
+  </div>
+
+  <table class="calendar">
+    <thead>
+      <tr>
+        {% for label in ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}<th>{{ label }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for week in weeks %}
+        <tr>
+          {% for day in week %}
+            {% set key = day.isoformat() %}
+            {% set events = buckets.get(key, []) %}
+            <td class="cal-day {{ 'other-month' if day.month != month }} {{ 'today' if day == today }}">
+              <div class="cal-date">
+                {% if resource.can('create', identity) %}
+                  <a href="/r/{{ resource.name }}/new?with.{{ spec.start_field }}={{ key }}"
+                     title="Add on {{ key }}">{{ day.day }}</a>
+                {% else %}{{ day.day }}{% endif %}
+              </div>
+              {% for record in events[:4] %}
+                <a class="cal-event" href="/r/{{ resource.name }}/{{ record.pk }}"
+                   title="{{ record.get(spec.title_field) }}">
+                  {{ record.get(spec.title_field)|string|truncate_chars(22) }}
+                </a>
+              {% endfor %}
+              {% if events|length > 4 %}
+                <span class="cal-more">+{{ events|length - 4 }} more</span>
+              {% endif %}
+            </td>
+          {% endfor %}
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

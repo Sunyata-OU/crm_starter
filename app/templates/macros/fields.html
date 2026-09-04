@@ -1,0 +1,58 @@
+{#
+  Rendering one field, in display or input mode.
+
+  Import this "with context" -- as every caller does. A Jinja macro does not
+  receive the calling template's context otherwise, and the date and time
+  filters need the reader's timezone from it. Without that the page renders,
+  but every instant silently comes out in UTC.
+
+  Both go through the template resolver so a project can override how a single
+  field on a single resource looks by dropping a file into
+  templates/resources/<name>/fields/<mode>/<field>.html -- without touching
+  these macros or the table that calls them.
+#}
+
+{% macro display(resource, field, record, templates) %}
+  {%- set partial = templates.field_template(resource.name, field, 'display') -%}
+  {%- set value = field.to_display(field.extract(record)) -%}
+  {% include partial %}
+{% endmacro %}
+
+{% macro input(resource, bound, templates, form=None) %}
+  {%- set field = bound.field -%}
+  {%- set partial = templates.field_template(resource.name, field, 'input') -%}
+  {%- set value = bound.display_value -%}
+  {% include partial %}
+{% endmacro %}
+
+{#
+  A labelled input with its help text and error message.
+  `describedby` wires the error and hint to the input for screen readers.
+#}
+{% macro field_row(resource, bound, templates, form=None) %}
+  {% set field = bound.field %}
+  <div class="field {{ 'has-error' if bound.has_error }} field-{{ field.type_name }}"
+       data-field="{{ field.name }}">
+    <label for="id_{{ field.name }}">
+      {{ field.label }}
+      {% if field.required %}<span class="required" aria-label="required">*</span>{% endif %}
+    </label>
+    {{ input(resource, bound, templates, form) }}
+    {% if bound.has_error %}
+      <p class="field-error" id="err_{{ field.name }}" role="alert">{{ bound.error }}</p>
+    {% elif field.help %}
+      <p class="field-help" id="help_{{ field.name }}">{{ field.help }}</p>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{# Shared attributes for every input, so wiring stays consistent across types. #}
+{% macro attrs(bound) %}
+  id="id_{{ bound.field.name }}"
+  name="{{ bound.field.name }}"
+  {% if bound.field.required %}required{% endif %}
+  {% if not bound.editable %}disabled{% endif %}
+  {% if bound.field.placeholder %}placeholder="{{ bound.field.placeholder }}"{% endif %}
+  {% if bound.has_error %}aria-invalid="true" aria-describedby="err_{{ bound.field.name }}"
+  {% elif bound.field.help %}aria-describedby="help_{{ bound.field.name }}"{% endif %}
+{% endmacro %}

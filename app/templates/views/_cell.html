@@ -1,0 +1,14 @@
+{#
+  A table cell in display mode. Returned after an inline edit so the swap puts
+  back a cell that is still double-clickable.
+#}
+{% import "macros/fields.html" as f with context %}
+<td class="align-{{ field.align }} editable {{ 'is-pending' if pending }}"
+    hx-get="/r/{{ resource.name }}/{{ record.pk }}/field/{{ field.name }}"
+    hx-trigger="dblclick" hx-swap="outerHTML"
+    title="{{ 'Queued — not yet confirmed' if pending else 'Double-click to edit' }}"
+    tabindex="0"
+    onkeydown="if(event.key==='Enter'){htmx.trigger(this,'dblclick')}">
+  {{ f.display(resource, field, record, templates) }}
+  {% if pending %}<span class="pending-dot" title="Queued" aria-label="Queued">◌</span>{% endif %}
+</td>

@@ -1,0 +1,9 @@
+{% import "macros/fields.html" as m with context %}
+{% set selected = value if value is iterable and value is not string else [] %}
+<select class="input" multiple size="{{ [field.choices(none)|length, 6]|min }}"
+        id="id_{{ field.name }}" name="{{ field.name }}"
+        {% if not bound.editable %}disabled{% endif %}>
+  {% for choice in field.choices(none) %}
+    <option value="{{ choice.value }}" {% if choice.value in selected %}selected{% endif %}>{{ choice.label }}</option>
+  {% endfor %}
+</select>

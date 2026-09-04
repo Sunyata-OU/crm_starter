@@ -1,0 +1,2 @@
+{% import "macros/fields.html" as m with context %}
+<textarea class="input" rows="{{ field.rows|default(4) }}" {{ m.attrs(bound) }}>{{ value|default('', true) }}</textarea>
