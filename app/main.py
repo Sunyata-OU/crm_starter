@@ -61,6 +61,29 @@ def build_registry(settings: Settings) -> Registry:
     return registry
 
 
+def wire_jobs(settings: Settings, registry: Registry) -> None:
+    """Point the job queue at its table and set the notifier's delivery mode.
+
+    The web process binds the queue so it can *enqueue*; it does not run jobs.
+    Draining is ``crm worker``, deliberately a separate process: work that must
+    survive a deploy should not live in the thing being deployed.
+    """
+    from app.jobs import handlers as _handlers  # noqa: F401  (registers them)
+    from app.jobs import queue
+    from app.notify import notifier
+
+    if registry.has_resource("jobs"):
+        queue.bind(registry.resource("jobs").provider)
+    elif settings.notify_delivery == "queue":
+        log.warning(
+            "CRM_NOTIFY_DELIVERY=queue needs a 'jobs' resource; deliveries will "
+            "run in the background instead"
+        )
+
+    notifier.background = settings.notify_delivery != "inline"
+    notifier.queue_deliveries = settings.notify_delivery == "queue" and queue.configured
+
+
 def build_auth(settings: Settings, registry: Registry, sessions: SessionStore) -> AuthChain:
     """Assemble the authentication chain named in settings.
 
@@ -218,6 +241,7 @@ def create_app(settings: Settings | None = None, registry: Registry | None = Non
         notifier.use(build_channels(settings))
         if reg.has_resource("notifications"):
             notifier.bind(reg.resource("notifications").provider)
+        wire_jobs(settings, reg)
         log.info("ready: %d resources, auth chain %s", len(reg), app.state.crm.auth)
         try:
             yield

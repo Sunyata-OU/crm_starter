@@ -16,6 +16,8 @@
     <a class="btn btn-sm" href="{{ request|querystring(year=None, month=None) }}">Today</a>
   </div>
 
+  {# A month is seven columns wide whatever the screen is, so it scrolls. #}
+  <div class="matrix-wrap">
   <table class="calendar">
     <thead>
       <tr>
@@ -50,4 +52,5 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 {% endblock %}

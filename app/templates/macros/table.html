@@ -25,7 +25,12 @@
 
 {% macro table(resource, page, columns, spec, request, templates, can_update=false, current_sort='') %}
 <div class="table-wrap">
-  <table class="data-table">
+  {#
+    `stackable` is what lets the narrow-screen stylesheet turn each row into a
+    card. Opt-in rather than automatic: a pivot is a matrix, and a matrix whose
+    rows have been stacked is no longer readable.
+  #}
+  <table class="data-table stackable">
     <thead>
       <tr>
         {% if spec.bulk_actions %}
@@ -52,7 +57,7 @@
       {% for record in page.items %}
         <tr data-pk="{{ record.pk }}">
           {% if spec.bulk_actions %}
-            <td class="col-select">
+            <td class="col-select" data-label="Select">
               <input type="checkbox" name="selected" form="bulk-form" value="{{ record.pk }}"
                      aria-label="Select this row">
             </td>
@@ -60,7 +65,14 @@
           {% for column in columns %}
             {% set field = resource.field(column.field) %}
             {% set editable = can_update and field.inline_editable and spec.inline_edit %}
+            {#
+              data-label is what the card layout shows in place of the column
+              header it has hidden. Rendered always: an attribute costs nothing
+              and a stylesheet that depends on markup only present at some
+              widths is a bug waiting for a resize.
+            #}
             <td class="align-{{ column.align or field.align }} {{ 'editable' if editable }}"
+                data-label="{{ column.label or field.label }}"
                 {% if editable %}
                   hx-get="/r/{{ resource.name }}/{{ record.pk }}/field/{{ field.name }}"
                   hx-trigger="dblclick"
@@ -79,7 +91,7 @@
             </td>
           {% endfor %}
           {% if spec.row_actions %}
-            <td class="col-actions">
+            <td class="col-actions" data-label="Actions">
               {% for name in spec.row_actions %}
                 {% set action = resource.actions.get(name) %}
                 {% if action and action.visible_for(record, identity) %}

@@ -1,15 +1,27 @@
 """Alembic's entry point.
 
-Two things are wired up here that a generated env.py does not do. The database
-URL comes from ``connections.yaml`` rather than ``alembic.ini``, so there is
-one place to configure it. The metadata comes from ``app.schema`` plus the
-tables the enabled modules declare, so
-``alembic revision --autogenerate`` compares against the declared tables.
+Three things are wired up here that a generated env.py does not do.
+
+The database URL comes from ``connections.yaml`` rather than ``alembic.ini``,
+so there is one place to configure it.
+
+The metadata comes from ``app.schema`` plus the tables the enabled modules
+declare, so ``alembic revision --autogenerate`` compares against the declared
+tables.
+
+And which database is being migrated is a parameter. ``crm migrate
+--connection db.analytics`` sets ``crm_connection``; the metadata is then
+narrowed to the tables that connection actually holds, and the revision history
+is tracked in its own version table. Both matter: without the narrowing,
+autogenerate proposes creating every other database's tables here, and without
+the separate version table two databases at different revisions would each
+believe they were at the other's.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 from logging.config import fileConfig
 
 from alembic import context
@@ -18,6 +30,7 @@ from sqlalchemy.pool import NullPool
 
 from app.core.connections import ConnectionRegistry
 from app.core.modules import select as select_modules
+from app.core.placement import DEFAULT_CONNECTION, metadata_for, placement
 from app.schema import metadata
 from app.settings import get_settings
 
@@ -32,15 +45,52 @@ if config.config_file_name is not None:
 # Change CRM_MODULES and the next `crm make-migration` reflects it.
 select_modules(enabled=get_settings().modules or None)
 
-target_metadata = metadata
+
+def connection_name() -> str:
+    """Which configured connection this run migrates."""
+    return config.get_main_option("crm_connection", DEFAULT_CONNECTION)
 
 
 def database_url() -> str:
-    """The URL of the main database, from the application's own configuration."""
+    """Its URL, from the application's own configuration."""
     settings = get_settings()
     registry = ConnectionRegistry.from_file(settings.connections_path)
-    name = config.get_main_option("crm_connection", "db.main")
-    return str(registry.spec(name).option("url", required=True))
+    return str(registry.spec(connection_name()).option("url", required=True))
+
+
+def version_table() -> str:
+    """Where this database records the revision it is at.
+
+    The default connection keeps alembic's own ``alembic_version``, so an
+    existing single-database deployment is untouched by this file gaining the
+    ability to address several. Every other connection gets its own table,
+    because two databases migrated from one history are at two revisions and a
+    shared version table can only remember one of them.
+    """
+    override = config.get_main_option("crm_version_table", "")
+    if override:
+        return override
+    name = connection_name()
+    if name == DEFAULT_CONNECTION:
+        return "alembic_version"
+    return "alembic_version_" + re.sub(r"[^0-9a-zA-Z_]+", "_", name).strip("_").lower()
+
+
+def target_metadata():
+    """The declared tables belonging to the database being migrated.
+
+    Building the registry loads the enabled modules and reads their resource
+    declarations, which is where the table-to-connection mapping comes from. It
+    never opens a connection -- doing so here would be circular, since this is
+    what tells alembic which connection to open.
+    """
+    from app.main import build_registry
+
+    place = placement(build_registry(get_settings()))
+    if not place.is_split():
+        return metadata
+    mine = place.tables_on(connection_name(), metadata.tables)
+    return metadata_for(metadata, mine)
 
 
 def run_migrations_offline() -> None:
@@ -51,11 +101,12 @@ def run_migrations_offline() -> None:
     """
     context.configure(
         url=database_url(),
-        target_metadata=target_metadata,
+        target_metadata=target_metadata(),
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
         render_as_batch=True,
+        version_table=version_table(),
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -64,7 +115,7 @@ def run_migrations_offline() -> None:
 def do_run_migrations(connection) -> None:
     context.configure(
         connection=connection,
-        target_metadata=target_metadata,
+        target_metadata=target_metadata(),
         # Type changes are detected too; without this a column changing from
         # String(60) to String(200) passes unnoticed.
         compare_type=True,
@@ -72,6 +123,7 @@ def do_run_migrations(connection) -> None:
         # instead. Harmless elsewhere, and it means one migration works on
         # both SQLite and PostgreSQL.
         render_as_batch=True,
+        version_table=version_table(),
     )
     with context.begin_transaction():
         context.run_migrations()

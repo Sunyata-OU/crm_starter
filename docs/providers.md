@@ -144,6 +144,7 @@ routing key.
 | `AMQPWriteProvider` | Publishes commands. Writes return `PENDING`; reads are refused rather than faked. |
 | `MemoryProvider` | Tests, demos, prototypes. Capabilities configurable, which is how the shim is tested. |
 | `CompositeProvider` | Reads from one, writes to another. Declare with `resource.write_provider = "mq.events#thing"`. |
+| `UnionProvider` | Reads one resource from several backends at once. Declare with `provider=Union(...)`; see [Several databases](multiple-databases.md). |
 | `ReadOnly` | Wraps any provider to refuse writes. |
 | `AuditingProvider` | Wraps any provider to record every write, with before/after values. Applied automatically; not something a resource declares. |
 

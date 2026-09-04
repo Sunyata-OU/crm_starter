@@ -85,6 +85,26 @@ an error.
 `uv run crm capabilities` shows, per resource, which stages are native and
 which are emulated. The same table is on the `/system` page.
 
+## Providers compose
+
+The three wrappers below all satisfy the same interface they wrap, which is why
+a resource can gain any of them without a view noticing.
+
+| Wrapper | What it changes |
+| --- | --- |
+| `CapabilityShim` | Emulates the query stages the backend cannot do. Applied to everything. |
+| `AuditingProvider` | Records every write with before/after values. Sits inside the shim, so it sees real writes and not the reads the shim performs. |
+| `CompositeProvider` | Reads from one backend, writes to another. |
+| `ReadOnly` | Refuses writes. |
+| `UnionProvider` | Merges several backends into one row set — see [Several databases](multiple-databases.md). Each source is shimmed on its own first, so the union pushes filters down rather than fetching everything and filtering itself. |
+
+Where the tables behind those backends live is not configured twice.
+`app.core.placement` reads it back out of the resource declarations — a
+resource naming `db.archive#archived_deals` is what says that table is in the
+archive — and `crm migrate` and `crm seed` act on one database at a time from
+that. Tables nothing claims belong to the default connection, so a
+single-database deployment declares no placement at all.
+
 ## Writes have three outcomes, not two
 
 ```python
@@ -187,6 +207,30 @@ and the dashboard. None of those routes contain authorization code.
 
 A record outside the caller's scope reads as **404, not 403**: confirming that
 a key exists is itself a disclosure.
+
+## Three ways to do something later
+
+They are not alternatives; each is right for a different promise.
+
+| | What it is | Survives a restart? | Use it for |
+| --- | --- | --- | --- |
+| `asyncio` task | a coroutine on this worker's event loop | no | work nobody is waiting on and nobody was promised — a delivery, a cache warm |
+| **job queue** | a row in `jobs`, drained by `crm worker` | yes | work that was *accepted*: an export somebody asked for, an outbound message |
+| `crm notify-due` | a sweep run by cron | yes | work that is due at a time rather than caused by an event |
+
+The queue is the middle one, and its design is in
+[`scaling.md`](scaling.md#background-work-and-queues). Two things about it are
+architectural rather than operational.
+
+It is **a resource like any other** — `provider="db.main#jobs"` — so it is
+visible as a screen, it works over any provider that supports a conditional
+write, and its tests run against the in-memory provider rather than needing a
+database. Nothing about it is specific to PostgreSQL.
+
+And it is **at-least-once**, where the reminder sweep is at-most-once. That is
+not an inconsistency: a reminder is an email, where a rare duplicate is worse
+than a rare miss, and a job is code you wrote, which can be made idempotent.
+Each picks the bargain that suits what it carries.
 
 ## Modules
 

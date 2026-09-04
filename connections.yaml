@@ -63,12 +63,25 @@ connections:
   #   limits:
   #     max_mb: 100
 
-  # A second database, to show that resources may live in different stores.
-  # Disabled by default so the demo runs with nothing else installed.
-  # db.analytics:
-  #   type: sqlalchemy
-  #   url: ${ANALYTICS_URL}
-  #   enabled: false
+  # A second database, to show that resources may live in different stores --
+  # and, with the `demo_archive` module, that one resource may be served from
+  # both at once.
+  #
+  # Disabled rather than removed: a disabled connection is never opened, so it
+  # costs nothing until you want it, and `crm check-connections` still reports
+  # it by name rather than leaving you to wonder where it went. Turn it on with
+  # CRM_ARCHIVE_ENABLED=true.
+  #
+  # Each database keeps its own migration history and its own version table --
+  # `crm migrate --connection db.archive`, or `crm migrate --all` for every one
+  # of them in turn.
+  db.archive:
+    type: sqlalchemy
+    url: ${CRM_ARCHIVE_URL:-sqlite+aiosqlite:///./crm-archive.db}
+    enabled: ${CRM_ARCHIVE_ENABLED:-false}
+    pool_size: ${CRM_DB_POOL_SIZE:-10}
+    max_overflow: ${CRM_DB_MAX_OVERFLOW:-20}
+    pool_recycle: ${CRM_DB_POOL_RECYCLE:-1800}
 
   # A read-only HTTP backend. The capability shim supplies filtering, sorting
   # and pagination that the endpoint itself does not offer.

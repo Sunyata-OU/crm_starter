@@ -521,7 +521,20 @@ body.htmx-request::after {
 .modal[hidden] { display: none; }
 .modal { position: fixed; inset: 0; background: rgba(15,18,25,.45); display: grid; place-items: center; z-index: 90; padding: 1rem; }
 
-/* -- responsive ----------------------------------------------------------- */
+/* -- responsive -----------------------------------------------------------
+
+   Three breakpoints, each undoing one assumption the desktop layout makes.
+
+   900px  two columns become one.
+   720px  the sidebar stops taking horizontal space and becomes a drawer.
+   640px  a table stops being a table.
+
+   That last one is the only interesting one. A list has more columns than a
+   phone has width, and the usual answer -- let it scroll sideways -- hides the
+   columns that matter behind a gesture nobody makes. So each row becomes a
+   card and each cell carries its own label, which is what `data-label` in the
+   table macro is for. Opt-in via `.stackable`, because a pivot table is a
+   matrix and a stacked matrix is not readable; those scroll instead. */
 
 @media (max-width: 900px) {
   .detail-layout.with-timeline { grid-template-columns: 1fr; }
@@ -536,7 +549,103 @@ body.htmx-request::after {
   body.nav-open .sidebar { transform: none; box-shadow: var(--shadow-lg); }
   .nav-toggle { display: block; }
   .content { padding: .85rem; }
+  .toolbar { gap: .5rem; }
+  .toolbar .search { flex: 1 1 100%; }
+  .toolbar .search input { width: 100%; }
   .toolbar-right { width: 100%; margin-left: 0; }
+  .view-switch { flex: 1 1 100%; }
+  .view-switch .view-tab { flex: 1; text-align: center; }
+  /* A board column at desktop width leaves no room for the next one, which is
+     the signal that there is a next one. Narrower, and the peek is the hint. */
+  .board-column { min-width: 78vw; }
+}
+
+@media (max-width: 640px) {
+  /* 16px is the threshold below which iOS zooms the page on focus, which then
+     leaves the layout scrolled sideways with no obvious way back. */
+  .input, select, textarea, .toolbar .search input { font-size: 16px; }
+
+  /* Rows become cards. */
+  .stackable { display: block; }
+  .stackable thead {
+    /* Hidden from sight, kept for screen readers and for the sort links, which
+       are the only way to sort and must not disappear with the header row. */
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  .stackable tbody, .stackable tr, .stackable td { display: block; width: 100%; }
+  .table-wrap:has(.stackable) {
+    background: none; border: 0; box-shadow: none; overflow-x: visible;
+  }
+  .stackable tr {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+    padding: .5rem .75rem; margin-bottom: .6rem;
+  }
+  .stackable tr:hover { background: var(--surface); }
+  .stackable td {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 1rem; text-align: right; border-bottom: 0; padding: .3rem 0;
+  }
+  .stackable td::before {
+    content: attr(data-label);
+    flex: 0 0 auto; text-align: left; color: var(--text-muted);
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
+    font-weight: 600;
+  }
+  /* The first cell is the row's identity, so it reads as a heading rather than
+     as one more labelled value. */
+  .stackable td:first-of-type { padding-top: .1rem; }
+  .stackable td.col-select::before { display: none; }
+  .stackable td.col-select { justify-content: flex-start; }
+  .stackable td.col-actions {
+    width: auto; white-space: normal; justify-content: flex-end;
+    gap: .4rem; flex-wrap: wrap; padding-top: .5rem;
+    border-top: 1px solid var(--border); margin-top: .35rem;
+  }
+  .stackable td.col-actions .btn { flex: 1 1 auto; }
+  /* An empty list is one message, not a cell in a card. */
+  .stackable .empty-row, .stackable .empty-row td {
+    display: block; border: 0; background: none; box-shadow: none;
+    padding: 0; text-align: center;
+  }
+  .stackable .empty-row td::before { display: none; }
+  /* Inline editing still works; it just needs the width back. */
+  .stackable td.cell-editing { display: block; text-align: left; }
+  .stackable td.cell-editing::before { display: block; margin-bottom: .25rem; }
+  .stackable td.editable:hover { box-shadow: none; }
+  .text-block { max-width: 100%; }
+
+  .pagination { justify-content: center; gap: .5rem; }
+  .page-info, .page-controls { flex: 1 1 100%; justify-content: center; text-align: center; }
+  .bulk-bar { flex-wrap: wrap; }
+
+  /* A dialog on a phone is a sheet: full width, anchored to the bottom edge
+     where a thumb is, and never taller than the viewport. */
+  .modal-backdrop { padding: 0; place-items: end stretch; }
+  .modal-dialog {
+    width: 100%; max-height: 92vh; overflow-y: auto;
+    border-radius: var(--radius) var(--radius) 0 0; border-bottom: 0;
+  }
+  .modal-head { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+
+  .topbar { flex-wrap: wrap; gap: .4rem; }
+  .topbar-actions { margin-left: 0; width: 100%; flex-wrap: wrap; }
+  .topbar-actions .btn { flex: 1 1 auto; }
+  .form-actions { flex-wrap: wrap; }
+  .form-actions .btn { flex: 1 1 auto; }
+}
+
+/* A matrix keeps its shape and scrolls: a calendar with stacked weeks is a
+   list, and a pivot with stacked rows is a pile of numbers. */
+.matrix-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: var(--radius);
+}
+@media (max-width: 720px) {
+  .matrix-wrap .calendar { min-width: 34rem; }
+  .cal-day { height: auto; min-height: 4.5rem; }
 }
 
 /* -- history -------------------------------------------------------------- */

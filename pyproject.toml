@@ -3,6 +3,9 @@ name = "crm-starter"
 version = "0.1.0"
 description = "Provider-driven CRM starter: FastAPI + Jinja + HTMX. Declarative resources over pluggable backends."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Tony Benoy", email = "me@tonybenoy.com" }]
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",

@@ -78,6 +78,8 @@ class TestTheConfigurationReference:
     EXTERNAL = {
         "DATABASE_URL", "DB_POOL_SIZE", "DB_MAX_OVERFLOW", "DB_POOL_RECYCLE",
         "CACHE_BACKEND", "REDIS_URL", "FILE_BACKEND", "FILE_ROOT", "SQL_ECHO",
+        # The second database, likewise read by connections.yaml.
+        "ARCHIVE_ENABLED", "ARCHIVE_URL",
     }
 
     def _documented(self) -> set[str]:

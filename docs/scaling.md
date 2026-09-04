@@ -54,6 +54,9 @@ Measured against SQLite with the demo modules enabled, caches warm:
 | deals, board | 8 | one grouped aggregate + one per column (5) + one batch per relation field (2) |
 | activities, calendar | 2 | rows, one relation batch |
 | dashboard | 10 | one count per visible resource, issued concurrently — 24ms of database time in 8ms of wall clock |
+| all deals (union of two databases), list | 4 | rows + count, once per database, issued concurrently |
+| the same, filtered to one store | 2 | a filter on the source column picks the databases; the other is never opened |
+| the same, chart or pivot | 2 | each database groups its own rows; only the groups are merged |
 
 None of these grow with the number of rows on the page. That property is what
 the performance tests exist to protect.
@@ -190,28 +193,67 @@ create or an update into a message and returns `PENDING` with a correlation id,
 which the form pipeline renders as a queued badge. That is how a resource whose
 writes are asynchronous shares its screens with one whose writes are not.
 
-**Background jobs** — delivering an email, generating an export — are not a
-queue today. A notification raised during a request is delivered in a task on
-the worker's event loop, so a save is not held up by a slow SMTP server. Two
-consequences worth knowing:
+**Background jobs** are a table and a worker. `queue.enqueue("kind", {...})`
+writes a row before the caller is told the work was accepted; `crm worker`
+claims and runs it. The row is the point: an `asyncio` task is faster and is
+lost when the worker stops, which is fine for a delivery nobody is waiting on
+and not fine for one somebody was told had been accepted.
 
-* In-flight deliveries are awaited at shutdown, bounded by
-  `CRM_SHUTDOWN_TIMEOUT`. A worker killed outright still loses them — the
-  notification row survives, because it is written before delivery is
-  attempted, so nothing is lost from the in-app bell.
-* Delivery is retried on transient failures only: a timeout, a dropped
-  connection, an SMTP 4xx or an HTTP 5xx. A rejected address or a 404 webhook
-  is reported at once rather than attempted three times.
+```python
+from app.jobs import Retry, register, queue
 
-Scheduled work is a sweep, not a timer: `crm notify-due`, run by cron or a
-scheduler. It claims each row with a conditional write before sending, so
-running it from several places is safe.
+@register("report.export")
+async def export(job):
+    ...                      # raise Retry(...) to ask for another attempt
 
-A deployment that needs durable background jobs — work that survives a worker
-being killed, or that should run somewhere other than the web hosts — should
-put a real queue behind it. The seam is the notification channel: a channel
-that publishes to a broker instead of sending directly is about thirty lines,
-and everything upstream of it is unchanged.
+await queue.enqueue("report.export", {"id": 42}, key="export:42")
+```
+
+```bash
+uv run crm worker              # drain the queue until stopped
+uv run crm jobs --failed       # what is queued, running, done, failed
+```
+
+Four properties, each the answer to a way this normally goes wrong:
+
+| | |
+| --- | --- |
+| **Claimed, not locked** | A conditional write, so several workers never run the same job — and no advisory locks, so any provider that supports `update_if` can hold the queue. |
+| **At-least-once** | A retried job may run twice, so **handlers must be idempotent**. The opposite bargain from `deliver_due`, deliberately: a reminder is an email, where a duplicate is worse than a miss, but a job is code you wrote and can make safe. |
+| **Attempts counted at the claim** | A worker killed mid-job has still used one. Counting at the failure instead is how a job that reliably kills its worker runs for ever. |
+| **A lease, not a prayer** | A job whose worker vanished is requeued once its claim goes stale (15 minutes by default), or parked as failed if it is out of attempts. |
+
+Only `Retry` is retried. Any other exception fails the job at once, because
+repeating a `KeyError` five times produces the same `KeyError` and delays the
+report of a real bug.
+
+**Notification delivery** is the first thing to use it. `CRM_NOTIFY_DELIVERY`
+chooses:
+
+| Value | Delivery | Survives a restart? |
+| --- | --- | --- |
+| `background` (default) | a task on this worker's event loop | no — in-flight ones are lost |
+| `queue` | a row, drained by `crm worker` | yes |
+| `inline` | before the request returns | n/a — what tests and CLI commands want |
+
+`background` awaits in-flight deliveries at shutdown, bounded by
+`CRM_SHUTDOWN_TIMEOUT`; a worker killed outright still loses them, though the
+notification row survives so nothing is lost from the in-app bell. `queue`
+survives all of that **but needs `crm worker` running somewhere** — with
+nothing draining it, notifications are stored and never delivered, which is why
+`crm serve` warns about the combination in production.
+
+Delivery is retried on transient failures only: a timeout, a dropped
+connection, an SMTP 4xx or an HTTP 5xx. A rejected address or a 404 webhook is
+reported at once rather than attempted three times.
+
+Scheduled work is still a sweep, not a timer: `crm notify-due`, run by cron. It
+claims each row with a conditional write before sending, so running it from
+several places is safe.
+
+Run the worker as its own process. Work that must survive a deploy should not
+live inside the thing being deployed, and a process that is not serving
+requests can be sized and restarted on its own.
 
 ## Several hosts
 
@@ -242,18 +284,28 @@ the worker that handles an edit invalidates its own cache immediately, the rest
 notice within the TTL. Shorten it if that window matters, or accept it: it is
 the one place this design trades immediacy for not requiring Redis.
 
-**Background delivery is best-effort.** A notification delivered in the
-background is a task in the worker's event loop; a worker that stops takes any
-in-flight delivery with it. The notification row itself is already stored — it
-is written before delivery is attempted, deliberately — so nothing is lost from
-the in-app bell, only the outbound copy. Deployments that need durable delivery
-should send through a queue.
+**Background delivery is best-effort — unless you queue it.** A notification
+delivered in the background is a task in the worker's event loop; a worker that
+stops takes any in-flight delivery with it. The notification row itself is
+already stored — written before delivery is attempted, deliberately — so
+nothing is lost from the in-app bell, only the outbound copy. Set
+`CRM_NOTIFY_DELIVERY=queue` and run `crm worker` to make the outbound copy
+durable too.
+
+**Run at least one worker**, and more than one if the work justifies it. Jobs
+are claimed with a conditional write, so workers do not need to coordinate, and
+a job whose worker dies is picked up by another once its lease expires.
 
 ## Known limits
 
 Stated rather than hidden, because a starter should be honest about where it
 stops:
 
+- **A queued job runs at least once, not exactly once.** A handler that
+  succeeds and dies before recording it will run again. Handlers must be
+  idempotent; the queue cannot make them so.
+- **The worker polls.** One indexed query per idle second per worker — cheap,
+  and not instant. A job enqueued now starts within the poll interval.
 - **Sessions cannot be revoked before they expire.** They are signed cookies
   with no server-side record, so "sign this user out everywhere" is not
   possible without adding one. `CRM_SESSION_MAX_AGE` bounds the exposure.
@@ -267,3 +319,10 @@ stops:
 - **A board costs one query per column.** Bounded by the number of choices in
   the grouping field, not by the number of rows, but a status field with thirty
   values makes an expensive board.
+- **A union reads a full page from every source.** Serving page N of merged,
+  sorted results needs `offset + page_size` rows from each backend, so paging
+  deep into a union is the one thing that costs more than a single-source view.
+  Bounded by `max_rows` and refused beyond it. See
+  [`multiple-databases.md`](multiple-databases.md).
+- **A union cannot average across its sources**, and cannot be written to. Both
+  are refusals with a message rather than approximations.

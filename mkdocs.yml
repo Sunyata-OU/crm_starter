@@ -48,6 +48,7 @@ nav:
   - Configuration: configuration.md
   - Resources Declaration: resources.md
   - Provider Contract: providers.md
+  - Several Databases: multiple-databases.md
   - Auth & Scoping: auth.md
   - Storage & Notifications: files-and-notifications.md
   - Scaling & Performance: scaling.md

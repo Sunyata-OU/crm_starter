@@ -23,6 +23,7 @@ from app.core.errors import ConfigError, RegistryError
 from app.core.results import Identity
 from app.providers.base import Provider
 from app.providers.shim import ensure_full
+from app.providers.union import Union, UnionProvider
 from app.resources.resource import Resource
 
 #: Builds a provider from a connection handle and the options after the '#'.
@@ -242,6 +243,14 @@ class Registry:
         """Resolve one resource's provider reference into a live provider."""
         ref = resource.provider_ref
 
+        # A resource whose rows live in several backends. Resolved before the
+        # string case because a union is a declaration, not a live provider.
+        if isinstance(ref, Union):
+            return ensure_full(
+                await self._build_union(ref, resource),
+                search_fields=resource.searchable_fields(),
+            )
+
         # An already-constructed provider, for tests and in-memory resources.
         if not isinstance(ref, str):
             return ensure_full(ref, search_fields=resource.searchable_fields())
@@ -286,6 +295,35 @@ class Registry:
         # Every provider enters the system through the shim, so views can rely
         # on the full query contract regardless of the backend.
         return ensure_full(provider, search_fields=resource.searchable_fields())
+
+    async def _build_union(self, spec: Union, resource: Resource) -> Provider:
+        """Build one provider per source and merge them.
+
+        Each source goes through the shim on its own, so a union of a SQL table
+        and an HTTP endpoint has both halves answering the full query contract
+        before the merge sees them -- which is what lets the union push a
+        filter down to each rather than fetching everything and filtering here.
+        """
+        searchable = resource.searchable_fields()
+        bound = [
+            (
+                source.label,
+                ensure_full(
+                    await self._build_named(source.ref, resource),
+                    search_fields=searchable,
+                ),
+            )
+            for source in spec.sources
+        ]
+        return UnionProvider(
+            bound,
+            name=f"union:{resource.name}",
+            pk_field=resource.pk,
+            source_field=spec.source_field,
+            prefixed=spec.prefixed,
+            max_rows=spec.max_rows,
+            searchable_fields=searchable,
+        )
 
     async def _build_named(self, ref: str, resource: Resource) -> Provider:
         """Build one provider from a ``connection#target`` reference."""

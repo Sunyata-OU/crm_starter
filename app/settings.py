@@ -110,6 +110,12 @@ class Settings(BaseSettings):
     # -- notifications ------------------------------------------------------
     #: Channels to deliver through. The in-app bell reads the stored row and is
     #: always available; the rest are opt-in.
+    #: How a notification reaches its channels. "background" is a task on this
+    #: worker's event loop -- immediate, and lost if the worker stops.
+    #: "queue" hands it to the durable job queue, which survives a restart at
+    #: the cost of a worker having to be running. "inline" delivers before the
+    #: request returns, which is what tests and CLI commands want.
+    notify_delivery: str = "background"
     notify_channels: CsvList = ["inapp"]
     notify_base_url: str = "http://localhost:8000"
 
@@ -209,6 +215,19 @@ class Settings(BaseSettings):
                 problems.append("CRM_COOKIE_SECURE should be true when serving over HTTPS.")
             if self.debug:
                 problems.append("CRM_DEBUG exposes tracebacks and must be off in production.")
+        if self.notify_delivery not in ("inline", "background", "queue"):
+            problems.append(
+                f"CRM_NOTIFY_DELIVERY is {self.notify_delivery!r}; it must be "
+                f"'inline', 'background' or 'queue'."
+            )
+        if self.notify_delivery == "queue" and self.is_production:
+            # Not an error -- it is the durable choice -- but a queue with
+            # nothing draining it holds every notification for ever, and the
+            # symptom (no emails, no errors) points nowhere near the cause.
+            problems.append(
+                "CRM_NOTIFY_DELIVERY=queue needs `crm worker` running somewhere, "
+                "or notifications will be stored and never delivered."
+            )
         if "proxy_header" in self.auth_providers and not self.proxy_trusted_ips:
             problems.append(
                 "The proxy_header auth provider is enabled but CRM_PROXY_TRUSTED_IPS is "

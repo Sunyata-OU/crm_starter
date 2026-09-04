@@ -17,6 +17,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Index,
     Integer,
     MetaData,
     String,
@@ -171,6 +172,47 @@ notifications = Table(
     Column("priority", String(20), default="normal", index=True),
 )
 
+#: Background work that must survive the worker that raised it.
+#:
+#: A row here is a promise: something has been accepted and will be done, by
+#: this process or another, now or after a restart. That is the whole reason
+#: the table exists -- an ``asyncio`` task is faster and is lost when the
+#: worker stops, which is fine for a delivery nobody is waiting on and not fine
+#: for one somebody was told had been accepted.
+jobs = Table(
+    "jobs", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("created_at", Instant, server_default=func.now(), nullable=False),
+    # What to run, and what to run it with. The kind names a registered
+    # handler; a job whose kind nothing handles is parked rather than lost, so
+    # deploying the handler later still runs it.
+    Column("kind", String(60), nullable=False, index=True),
+    Column("payload", Text),
+    # queued -> running -> done | failed. `queued` with a future run_at is a
+    # delayed job; `queued` with attempts > 0 is a retry waiting its turn.
+    Column("status", String(20), nullable=False, default="queued", index=True),
+    # When it becomes eligible. Claiming filters on this, so a retry backoff is
+    # just a later value rather than a sleeping task somewhere.
+    Column("run_at", Instant, nullable=False, index=True),
+    Column("attempts", Integer, nullable=False, default=0),
+    Column("max_attempts", Integer, nullable=False, default=5),
+    # Which worker holds it, and since when. Together they are how a job
+    # abandoned by a killed worker is found and released.
+    Column("claimed_by", String(80), index=True),
+    Column("claimed_at", Instant),
+    Column("finished_at", Instant),
+    Column("last_error", Text),
+    # Optional idempotency handle, so a caller that cannot avoid enqueuing
+    # twice can at least say the two are the same job.
+    Column("key", String(200), index=True),
+    Column("priority", Integer, nullable=False, default=0, index=True),
+    # The claim query -- "queued, and due" -- runs once per worker per poll,
+    # which is the most frequent query in the application by some margin. A
+    # composite index answers it from one scan; two single-column indexes make
+    # the database choose one and filter the rest.
+    Index("ix_jobs_claim", "status", "run_at"),
+)
+
 #: What happened, who did it, and what changed.
 audit_log = Table(
     "audit_log", metadata,
@@ -197,5 +239,5 @@ audit_log = Table(
 #: modules declared -- that is the set ``create_all`` and Alembic work from.
 PLATFORM_TABLES = (
     users, api_tokens, roles, permissions, audit_log, notifications,
-    timeline_entries,
+    timeline_entries, jobs,
 )

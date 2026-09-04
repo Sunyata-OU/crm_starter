@@ -99,6 +99,7 @@ class TestLoadingTheRealModules:
         assert {m.name for m in loaded} == {"core_identity", "core_access"}
         assert set(registry.resource_names) == {
             "users", "api_tokens", "roles", "permissions", "audit_log", "notifications",
+            "jobs",
         }
 
     def test_an_unknown_module_name_is_reported(self):

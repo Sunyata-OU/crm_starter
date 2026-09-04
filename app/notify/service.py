@@ -35,6 +35,10 @@ class Notifier:
         #: Delivery happens in the background so a slow SMTP server cannot make
         #: a user wait for their save to finish.
         self.background = True
+        #: Hand delivery to the durable job queue instead of to a task on this
+        #: worker's event loop. The difference only shows when the worker
+        #: stops: a task is lost, a job is picked up by whoever runs next.
+        self.queue_deliveries = False
         self._tasks: set[asyncio.Task] = set()
         #: Set by drain(). Reported by `is_closing`, so a caller can tell
         #: whether a late delivery will actually be waited for.
@@ -90,11 +94,37 @@ class Notifier:
         if notification.is_scheduled:
             return record
 
+        if self.queue_deliveries and await self._enqueue_delivery(record, ctx):
+            return record
         if self.background:
             self._spawn(self._deliver_and_record(notification, record, ctx))
         else:
             await self._deliver_and_record(notification, record, ctx)
         return record
+
+    async def _enqueue_delivery(self, record: Record | None, ctx: Ctx | None) -> bool:
+        """Hand this delivery to the job queue. False if it could not be.
+
+        Falling back rather than failing: a queue that is not configured or
+        will not accept the row should cost the durability, not the
+        notification. The caller then delivers it the way it always did.
+        """
+        if record is None or record.pk is None:
+            return False
+        from app.jobs import queue as job_queue
+        from app.jobs.handlers import NOTIFY_DELIVER
+
+        if not job_queue.configured:
+            return False
+        # Keyed on the notification, so an enqueue repeated after a retry or a
+        # duplicated request does not produce two deliveries.
+        job = await job_queue.enqueue(
+            NOTIFY_DELIVER,
+            {"id": record.pk},
+            key=f"{NOTIFY_DELIVER}:{record.pk}",
+            ctx=ctx,
+        )
+        return job is not None
 
     async def send_many(
         self, notifications: Iterable[Notification], ctx: Ctx | None = None
@@ -157,6 +187,30 @@ class Notifier:
 
     # -- delivery -----------------------------------------------------------
 
+    async def deliver_now(self, notification: Notification) -> list[Delivery]:
+        """Push one notification through every channel that wants it.
+
+        Public because the job handler needs it: delivery and storage are
+        separate steps by design, and a queued delivery is that separation
+        taken one step further.
+        """
+        return await self._deliver(notification)
+
+    async def record_delivery(
+        self, record: Record | None, deliveries: list[Delivery], ctx: Ctx | None = None
+    ) -> None:
+        """Write down what the channels made of it."""
+        if record is None or self.provider is None:
+            return
+        try:
+            await self.provider.update(
+                record.pk,
+                {"sent_at": utcnow(), "delivery": summarise(deliveries)},
+                ctx or Ctx.system(),
+            )
+        except Exception:
+            log.warning("could not record delivery for notification %s", record.pk)
+
     async def _deliver(self, notification: Notification) -> list[Delivery]:
         results: list[Delivery] = []
         for channel in self.channels:
@@ -174,16 +228,7 @@ class Notifier:
         self, notification: Notification, record: Record | None, ctx: Ctx | None
     ) -> None:
         deliveries = await self._deliver(notification)
-        if record is None or self.provider is None:
-            return
-        try:
-            await self.provider.update(
-                record.pk,
-                {"sent_at": utcnow(), "delivery": summarise(deliveries)},
-                ctx or Ctx.system(),
-            )
-        except Exception:
-            log.warning("could not record delivery for notification %s", record.pk)
+        await self.record_delivery(record, deliveries, ctx)
 
     # -- reading ------------------------------------------------------------
 

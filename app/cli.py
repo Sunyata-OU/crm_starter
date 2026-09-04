@@ -8,9 +8,14 @@ configuration in this environment going to work.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import re
+from pathlib import Path
 
 import typer
+
+from app.core.placement import DEFAULT_CONNECTION
 
 # Imported for its side effects; see the module docstring.
 from app.providers import builtin as _builtin  # noqa: F401
@@ -80,18 +85,28 @@ def serve(
 def seed(
     password: str = typer.Option("demo-password", help="Password for every demo account."),
     reset: bool = typer.Option(True, help="Drop existing tables first."),
+    connection: str = typer.Option(
+        DEFAULT_CONNECTION, "--connection", "-c", help="Which configured database to seed."
+    ),
 ) -> None:
-    """Create the schema for the enabled modules and fill it with sample data."""
+    """Create the schema for the enabled modules and fill it with sample data.
+
+    With resources spread over several databases, only the tables belonging to
+    ``--connection`` are created and dropped, so seeding one database cannot
+    delete another's tables. Run it once per database.
+    """
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from app.core.connections import ConnectionRegistry
+    from app.core.placement import placement
     from app.main import build_registry
+    from app.schema import metadata
     from app.seed import seed as run_seed
 
     settings = get_settings()
-    registry = ConnectionRegistry.from_file(settings.connections_path)
+    connections = ConnectionRegistry.from_file(settings.connections_path)
     try:
-        spec = registry.spec("db.main")
+        spec = connections.spec(connection)
     except Exception as exc:
         _fail(str(exc))
         return
@@ -102,21 +117,45 @@ def seed(
     # seeders within reach, so seeding follows CRM_MODULES exactly. With no
     # demo module enabled this creates the platform tables and the accounts,
     # and stops -- which is the intended starting point for a real project.
-    loaded = build_registry(settings).loaded_modules
+    registry = build_registry(settings)
+    loaded = registry.loaded_modules
+
+    place = placement(registry)
+    tables = (
+        place.tables_on(connection, metadata.tables) if place.is_split() else None
+    )
+    if tables is not None and not tables:
+        _fail(f"no declared tables live on connection {connection!r}; nothing to seed")
 
     async def go():
         engine = create_async_engine(url)
         try:
-            return await run_seed(engine, password=password, reset=reset, modules=loaded)
+            return await run_seed(
+                engine, password=password, reset=reset, modules=loaded, tables=tables
+            )
         finally:
             await engine.dispose()
 
     summary = asyncio.run(go())
+    if place.is_split():
+        elsewhere = [c for c in place.connections if c != connection]
+        if elsewhere:
+            typer.secho(
+                f"note: tables on {', '.join(repr(c) for c in elsewhere)} were not "
+                f"touched; seed each database separately.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
 
     _echo(f"Seeded {url.split('///')[-1] if '///' in url else url}\n")
     for key, count in summary.items():
         if key != "password":
             _echo(f"  {count:>4}  {key}")
+    if "users" not in summary:
+        # Seeding a database that does not hold the accounts. Printing sign-in
+        # details here would name credentials this run did not create.
+        _echo("\nThe accounts live in the platform database; seed that one for those.")
+        return
     _echo()
     typer.secho("Sign in with:", bold=True)
     _echo(f"  admin@example.com   / {summary['password']}   (admin)")
@@ -310,49 +349,247 @@ def token(
     _echo(f'Use it as:  curl -H "Authorization: Bearer {raw}" http://localhost:8000/api/...')
 
 
+def _version_dir(connection: str) -> Path:
+    """Where one connection's migrations live.
+
+    Each database gets its own linear history, because they are genuinely
+    independent: an analytics database has no reason to be at the same revision
+    as the platform one, and a single shared history would try to create every
+    database's tables in every database.
+
+    Secondary histories sit beside ``versions/`` rather than inside it --
+    alembic walks a version location recursively, so a subdirectory would be
+    read back into the main history it was meant to be separate from.
+    """
+    if connection == DEFAULT_CONNECTION:
+        return ROOT / "migrations" / "versions"
+    slug = re.sub(r"[^0-9a-zA-Z_]+", "_", connection).strip("_").lower()
+    return ROOT / "migrations" / f"versions_{slug}"
+
+
+def _alembic_config(connection: str, *, create: bool = False):
+    """An alembic config pointed at one connection's database and history."""
+    from alembic.config import Config
+
+    _known_connection(connection)
+    version_dir = _version_dir(connection)
+    if create:
+        version_dir.mkdir(parents=True, exist_ok=True)
+    elif not version_dir.exists():
+        _fail(
+            f"no migrations for connection {connection!r} yet; create one with:\n"
+            f"  uv run crm make-migration --connection {connection} \"initial\""
+        )
+
+    cfg = Config(str(ROOT / "alembic.ini"))
+    # env.py reads both: the first says which database, the second keeps its
+    # revision history out of the default database's version table.
+    cfg.set_main_option("crm_connection", connection)
+    cfg.set_main_option("version_locations", str(version_dir))
+    return cfg
+
+
+def _known_connection(connection: str) -> None:
+    """Fail early, with the list, rather than deep inside alembic."""
+    from app.core.connections import ConnectionRegistry
+
+    registry = ConnectionRegistry.from_file(get_settings().connections_path)
+    try:
+        spec = registry.spec(connection)
+    except Exception as exc:
+        _fail(str(exc))
+        return
+    if spec.type != "sqlalchemy":
+        _fail(
+            f"connection {connection!r} is a {spec.type!r} connection and holds no "
+            f"tables to migrate"
+        )
+
+
+def _table_connections() -> list[str]:
+    """Every connection the declared resources place tables on."""
+    from app.core.placement import placement
+    from app.main import build_registry
+
+    return list(placement(build_registry(get_settings())).connections)
+
+
 @app.command()
 def migrate(
     revision: str = typer.Argument("head", help="Target revision, or 'base' to undo all."),
+    connection: str = typer.Option(
+        DEFAULT_CONNECTION, "--connection", "-c", help="Which configured database to migrate."
+    ),
+    all_connections: bool = typer.Option(
+        False, "--all", help="Migrate every database the resources place tables on."
+    ),
     sql: bool = typer.Option(False, "--sql", help="Print the SQL instead of running it."),
 ) -> None:
-    """Bring the database up to date.
+    """Bring a database up to date.
 
     Wraps alembic so the URL comes from connections.yaml rather than being
-    configured twice.
+    configured twice. With resources spread over several databases, each has
+    its own history and its own version table; ``--all`` walks them in turn,
+    the platform database first.
     """
     from alembic import command
-    from alembic.config import Config
 
-    cfg = Config(str(ROOT / "alembic.ini"))
-    try:
-        if revision == "base":
-            command.downgrade(cfg, "base", sql=sql)
-        else:
-            command.upgrade(cfg, revision, sql=sql)
-    except Exception as exc:
-        _fail(f"migration failed: {exc}")
+    targets = _table_connections() if all_connections else [connection]
+    for name in targets:
+        if all_connections and not _version_dir(name).exists():
+            _echo(f"{name}: no migrations yet, skipped")
+            continue
+        cfg = _alembic_config(name)
+        if len(targets) > 1:
+            typer.secho(f"\n{name}", bold=True)
+        try:
+            if revision == "base":
+                command.downgrade(cfg, "base", sql=sql)
+            else:
+                command.upgrade(cfg, revision, sql=sql)
+        except Exception as exc:
+            _fail(f"migrating {name!r} failed: {exc}")
     if not sql:
-        _echo("Database is up to date.")
+        _echo("Database is up to date." if len(targets) == 1 else "\nAll databases are up to date.")
 
 
 @app.command("make-migration")
 def make_migration(
     message: str = typer.Argument(..., help="What this change does."),
+    connection: str = typer.Option(
+        DEFAULT_CONNECTION, "--connection", "-c", help="Which database this migration is for."
+    ),
     empty: bool = typer.Option(False, "--empty", help="Write a blank migration to fill in."),
 ) -> None:
     """Generate a migration from the difference between code and database.
+
+    Autogenerate compares only the tables belonging to ``--connection``, so a
+    migration for one database never proposes creating another's.
 
     Read what it produces before committing it: autogenerate is good at columns
     and indexes, and poor at anything that needs data moved.
     """
     from alembic import command
-    from alembic.config import Config
 
-    cfg = Config(str(ROOT / "alembic.ini"))
+    cfg = _alembic_config(connection, create=True)
     try:
         command.revision(cfg, message=message, autogenerate=not empty)
     except Exception as exc:
         _fail(f"could not generate a migration: {exc}")
+
+
+@app.command()
+def worker(
+    concurrency: int = typer.Option(4, help="Jobs to run at once."),
+    poll: float = typer.Option(1.0, help="Seconds to wait when the queue is empty."),
+    max_jobs: int = typer.Option(0, help="Stop after this many. 0 runs until stopped."),
+    lease: float = typer.Option(900.0, help="Seconds before a claimed job is assumed abandoned."),
+    timeout: float = typer.Option(300.0, help="Seconds one job may run before it is retried."),
+) -> None:
+    """Run queued background jobs until stopped.
+
+    A separate process on purpose. Work that must survive a deploy should not
+    live inside the thing being deployed, and a worker that is not serving
+    requests can be sized, scaled and restarted on its own.
+
+    Several may run at once: each job is claimed with a conditional write, so
+    two workers never run the same one. Stop it with Ctrl-C or SIGTERM and it
+    finishes the jobs in hand before returning; anything killed outright is
+    picked up again once its lease expires.
+    """
+    import signal
+
+    from app.jobs import queue, registered_kinds
+    from app.main import build_registry, wire_jobs
+
+    settings = get_settings()
+    registry = build_registry(settings)
+
+    async def go() -> int:
+        await registry.bind()
+        wire_jobs(settings, registry)
+        if not queue.configured:
+            _fail("No 'jobs' resource is registered, so there is no queue to drain.")
+
+        from app.main import build_channels
+        from app.notify import notifier
+
+        # The worker delivers; it does not hand deliveries back to itself.
+        notifier.use(build_channels(settings))
+        notifier.queue_deliveries = False
+        notifier.background = False
+        if registry.has_resource("notifications"):
+            notifier.bind(registry.resource("notifications").provider)
+
+        queue.lease = lease
+        queue.job_timeout = timeout
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            # Windows, or a loop that will not take handlers. Ctrl-C still
+            # raises KeyboardInterrupt; only the graceful part is lost.
+            with contextlib.suppress(NotImplementedError, RuntimeError):
+                loop.add_signal_handler(sig, queue.stop)
+
+        _echo(f"worker {queue.name} started; handling: {', '.join(registered_kinds())}")
+        try:
+            return await queue.work(concurrency=concurrency, poll=poll, max_jobs=max_jobs)
+        finally:
+            await registry.close()
+
+    try:
+        done = asyncio.run(go())
+    except KeyboardInterrupt:
+        _echo("\nstopped")
+        return
+    _echo(f"ran {done} job(s)")
+
+
+@app.command()
+def jobs(
+    failed: bool = typer.Option(False, "--failed", help="List the failed ones."),
+    limit: int = typer.Option(20, help="How many to list."),
+) -> None:
+    """What is in the job queue.
+
+    The first question when a background job has not happened is whether it was
+    ever accepted, and the answer is a row.
+    """
+    from app.jobs import queue, registered_kinds
+    from app.main import build_registry, wire_jobs
+
+    settings = get_settings()
+    registry = build_registry(settings)
+
+    async def go():
+        await registry.bind()
+        wire_jobs(settings, registry)
+        if not queue.configured:
+            _fail("No 'jobs' resource is registered.")
+        try:
+            return await queue.counts(), (await queue.failed(limit) if failed else [])
+        finally:
+            await registry.close()
+
+    counts, broken = asyncio.run(go())
+
+    _echo(f"handlers: {', '.join(registered_kinds()) or 'none registered'}\n")
+    if not counts:
+        _echo("The queue is empty.")
+    for status in ("queued", "running", "done", "failed"):
+        if status in counts:
+            colour = typer.colors.RED if status == "failed" else None
+            typer.secho(f"  {counts[status]:>6}  {status}", fg=colour)
+
+    if failed:
+        if not broken:
+            _echo("\nNothing has failed.")
+            return
+        typer.secho(f"\nLast {len(broken)} failure(s):", bold=True)
+        for record in broken:
+            _echo(f"  #{record.pk}  {record.get('kind')}")
+            _echo(f"          {record.get('last_error') or 'no detail recorded'}")
+        _echo("\nQueue one again from its detail page, or with the 'retry' action.")
 
 
 @app.command("notify-due")

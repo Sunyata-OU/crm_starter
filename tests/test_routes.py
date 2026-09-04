@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from .conftest import csrf_from, sign_in
 
 
@@ -403,3 +405,132 @@ class TestViewAliases:
 
     def test_an_unknown_view_still_falls_back(self, admin):
         assert admin.get("/r/deals?view=nonsense").status_code == 200
+
+
+class TestRelationLabelBatching:
+    """Relation labels are fetched in batches, not capped.
+
+    The bug this guards is quiet: past the batch size the excess rows rendered
+    their raw key instead of a name, which reads as missing data rather than as
+    a limit. It also keeps the IN clause under SQLite's parameter ceiling.
+    """
+
+    def test_more_keys_than_one_batch_are_all_resolved(self, monkeypatch):
+        import asyncio
+
+        from app.web.routes import resource as routes
+
+        monkeypatch.setattr(routes, "LABEL_BATCH", 2)
+
+        seen: list[int] = []
+
+        class Target:
+            name = "companies"
+            pk = "id"
+
+            def build_query(self, identity, *, filter, page_size, with_total):
+                seen.append(page_size)
+                self.last = filter
+                return filter
+
+            @staticmethod
+            def display_value(record):
+                return f"company {record.pk}"
+
+            class provider:
+                @staticmethod
+                async def list(query, ctx):
+                    from app.core.query import Page
+                    from app.core.results import Record
+
+                    return Page(items=[Record({"id": k}, "id") for k in query.value])
+
+        class View:
+            relation_labels: dict = {}
+            identity = None
+            ctx = None
+
+        labels = asyncio.run(
+            routes._relation_labels(View(), Target(), {"1", "2", "3", "4", "5"})
+        )
+
+        assert seen == [2, 2, 1], "keys must be fetched in batches, in full"
+        assert set(labels) == {"1", "2", "3", "4", "5"}
+
+
+class TestNarrowScreenMarkup:
+    """The list stops being a table on a phone, and that needs two things.
+
+    A stylesheet cannot invent a column header to put beside a value, so the
+    markup carries one per cell. And it must not do this to a pivot, which is a
+    matrix that stays a matrix. Both are markup contracts between the template
+    and the stylesheet, so both are asserted here -- a CSS-only change that
+    silently stopped matching would otherwise be invisible until someone opened
+    a phone.
+    """
+
+    def test_every_list_cell_carries_its_own_label(self, client, admin):
+        html = client.get("/r/contacts").text
+        assert 'class="data-table stackable"' in html
+        assert html.count("data-label=") >= 3
+        for label in ("Name", "Email"):
+            assert f'data-label="{label}"' in html
+
+    def test_a_pivot_is_not_stacked(self):
+        """A matrix with its rows stacked is a pile of numbers.
+
+        Read from the template rather than a rendered page: the fixture
+        registry has no pivot, and what is being asserted is the template's
+        choice not to opt in, not any particular resource's views.
+        """
+        from app.settings import APP_DIR
+
+        pivot = (APP_DIR / "templates" / "views" / "pivot.html").read_text()
+        assert "data-table pivot" in pivot
+        assert "stackable" not in pivot
+
+    def test_a_calendar_scrolls_rather_than_reflowing(self):
+        from app.settings import APP_DIR
+
+        calendar = (APP_DIR / "templates" / "views" / "calendar.html").read_text()
+        assert "matrix-wrap" in calendar
+
+
+class TestResponsiveStylesheet:
+    """The rules the markup above exists for.
+
+    Asserted against the file rather than a browser: a rule that goes missing
+    is a layout that silently reverts to a sideways-scrolling table, which is
+    exactly what the markup was added to prevent.
+    """
+
+    @pytest.fixture
+    def css(self) -> str:
+        from app.settings import APP_DIR
+
+        return (APP_DIR / "static" / "crm.css").read_text()
+
+    def test_there_is_a_phone_breakpoint(self, css):
+        assert "@media (max-width: 640px)" in css
+
+    def test_cells_are_labelled_from_the_markup(self, css):
+        assert "content: attr(data-label)" in css
+
+    def test_only_stackable_tables_are_stacked(self, css):
+        block = css.split("@media (max-width: 640px)")[1]
+        stacking = [
+            line.strip() for line in block.splitlines()
+            if "display: block" in line and ("table" in line or "tbody" in line or "tr," in line)
+        ]
+        assert stacking, "nothing turns a table into blocks"
+        assert all("stackable" in line for line in stacking), (
+            f"a rule stacks tables generally, which would break the pivot: {stacking}"
+        )
+
+    def test_inputs_do_not_trigger_ios_zoom(self, css):
+        """Under 16px, iOS zooms on focus and leaves the page scrolled sideways."""
+        block = css.split("@media (max-width: 640px)")[1]
+        assert "font-size: 16px" in block
+
+    def test_the_sidebar_becomes_a_drawer(self, css):
+        assert "body.nav-open .sidebar" in css

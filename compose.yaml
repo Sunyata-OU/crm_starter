@@ -82,6 +82,24 @@ services:
     command: ["while true; do crm notify-due; sleep 60; done"]
     restart: unless-stopped
 
+  # Drains the durable job queue. Its own service rather than a thread in the
+  # web container, which is the whole point: work that must survive a deploy
+  # should not live inside the thing being deployed. Scale it independently --
+  # `docker compose up --scale worker=3` is safe, because every job is claimed
+  # with a conditional write before it runs.
+  worker:
+    build: .
+    profiles: ["worker"]
+    environment:
+      CRM_DATABASE_URL: postgresql+asyncpg://crm:crm@db:5432/crm
+      CRM_MODULES: ${CRM_MODULES:-demo_crm,demo_sales}
+      CRM_NOTIFY_CHANNELS: inapp,console
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["crm", "worker"]
+    restart: unless-stopped
+
   # S3-compatible storage, for trying the S3 file backend without an AWS
   # account. Console on :9001, credentials minioadmin / minioadmin.
   minio:

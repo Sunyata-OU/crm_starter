@@ -57,6 +57,13 @@ ACTIONS = [
     ("delete", "Deleted", "red"),
 ]
 
+JOB_STATES = [
+    ("queued", "Queued", "amber"),
+    ("running", "Running", "blue"),
+    ("done", "Done", "green"),
+    ("failed", "Failed", "red"),
+]
+
 STATUSES = [
     ("ok", "Applied", "green"),
     ("pending", "Queued", "amber"),
@@ -87,6 +94,7 @@ def register(registry: Registry) -> None:
     registry.add_resource(_permissions(registry))
     registry.add_resource(_audit_log())
     registry.add_resource(_notifications())
+    registry.add_resource(_jobs())
 
 
 def _known_resources(registry: Registry):
@@ -355,3 +363,108 @@ async def reload_permissions(records, ctx: Ctx, resource: Resource) -> ActionRes
         message=f"Reloaded {len(table)} grant(s) across {len(table.roles)} role(s).",
         level="success",
     )
+
+
+def _jobs() -> Resource:
+    """The durable work queue, as a screen.
+
+    Worth having for the same reason the audit log is: when a background job
+    has not happened, the first question is whether it was ever accepted, and
+    the answer is a row. Administrators only -- a payload can carry anything --
+    and read-only apart from one action, because editing a job's state by hand
+    while a worker holds it is a race with no upside.
+    """
+    return Resource(
+        "jobs",
+        provider="db.main#jobs",
+        label="Job",
+        label_plural="Background jobs",
+        icon="◷",
+        menu_group="Administration",
+        menu_order=60,
+        display_field="kind",
+        default_sort=["-created_at"],
+        policy=RolePolicy(read=["admin"]),
+        # Not audited: a job row is already a record of something happening,
+        # and a worker updates it several times per run.
+        audited=False,
+        fields=[
+            TextField("id", in_form=False),
+            TextField("kind", label="Kind", searchable=True, in_filter=True),
+            StatusField("status", choices=JOB_STATES, in_filter=True),
+            DateTimeField("created_at", label="Enqueued", readonly=True),
+            DateTimeField("run_at", label="Runs at", readonly=True),
+            DateTimeField("finished_at", label="Finished", readonly=True),
+            TextField("attempts", label="Attempts", readonly=True),
+            TextField("max_attempts", label="Limit", readonly=True, in_list=False),
+            TextField("claimed_by", label="Worker", readonly=True, in_filter=True),
+            DateTimeField("claimed_at", label="Claimed", readonly=True, in_list=False),
+            TextField("key", label="Key", searchable=True, in_list=False),
+            TextField("priority", label="Priority", in_list=False),
+            JSONField("payload", label="Payload", in_list=False),
+            TextAreaField("last_error", label="Last error", in_list=False),
+        ],
+        search=SearchSpec(
+            fields=("kind", "key", "last_error"),
+            filters=("status", "kind", "claimed_by"),
+        ),
+        actions=[_retry_job],
+        views=[
+            ListView(
+                columns=[
+                    Column("kind", link=True, width="22%"),
+                    "status",
+                    Column("attempts", label="Tries", width="8%"),
+                    Column("run_at", label="Runs at"),
+                    Column("claimed_by", label="Worker"),
+                    Column("finished_at", label="Finished"),
+                ],
+                default_sort=["-created_at"],
+                inline_edit=False,
+                empty_message="Nothing has been queued.",
+            ),
+            DetailView(
+                sections=[
+                    Section("Job", ["kind", "status", "key", "priority"], columns=2),
+                    Section("Timing", ["created_at", "run_at", "claimed_at", "finished_at"], columns=2),
+                    Section("Attempts", ["attempts", "max_attempts", "claimed_by"], columns=3),
+                    Section("Payload", ["payload"], columns=1),
+                    Section("Last error", ["last_error"], columns=1),
+                ],
+                timeline=False,
+            ),
+        ],
+    )
+
+
+@action(
+    "retry",
+    "Queue again",
+    icon="↻",
+    confirm="Put this job back on the queue?",
+    roles=["admin"],
+    available=lambda record, identity: str(record.get("status")) in ("failed", "done"),
+)
+async def _retry_job(records, ctx: Ctx, resource: Resource) -> ActionResult:
+    """Queue a finished job again, with its attempt count reset.
+
+    Resetting is the point. A job that failed five times is unretryable exactly
+    at the moment somebody has fixed the reason it failed, which is the only
+    moment anyone wants to retry it.
+
+    Only finished jobs: requeueing one a worker currently holds would have two
+    workers running it, which is the one thing the claim exists to prevent.
+    """
+    from app.jobs import queue
+
+    queued = 0
+    for record in records:
+        if str(record.get("status")) not in ("failed", "done"):
+            continue
+        await queue.retry(record.pk, ctx)
+        queued += 1
+    if not queued:
+        return ActionResult(
+            message="Only a finished job can be queued again.", level="warning", refresh=False
+        )
+    return ActionResult(message=f"Queued {queued} job(s) again.")

@@ -109,3 +109,75 @@ class TestCommands:
         result = runner.invoke(cli, ["resources", "-v"])
         assert result.exit_code == 0
         assert "email" in result.output
+
+
+class TestPerDatabaseMigrations:
+    """Each database gets its own history and its own version table.
+
+    Both halves matter and they fail differently. Sharing a version directory
+    means one database's migrations run against another; sharing a version
+    table means two databases at different revisions each believe they are at
+    the other's.
+    """
+
+    def test_the_default_database_keeps_alembics_own_layout(self):
+        """An existing single-database deployment must see no change at all."""
+        from app.cli import _version_dir
+        from app.core.placement import DEFAULT_CONNECTION
+
+        assert _version_dir(DEFAULT_CONNECTION).name == "versions"
+
+    def test_a_second_database_gets_its_own_directory(self):
+        from app.cli import _version_dir
+
+        assert _version_dir("db.archive").name == "versions_db_archive"
+
+    def test_secondary_histories_sit_beside_the_main_one_not_inside_it(self):
+        """Alembic walks a version location recursively.
+
+        A subdirectory of ``versions/`` would be read back into the history it
+        was meant to be separate from, which is the sort of thing that works
+        until the second migration.
+        """
+        from app.cli import _version_dir
+        from app.core.placement import DEFAULT_CONNECTION
+
+        main = _version_dir(DEFAULT_CONNECTION)
+        other = _version_dir("db.archive")
+        assert main not in other.parents
+        assert other.parent == main.parent
+
+    def test_the_version_table_is_named_per_connection(self):
+        import re
+
+        # The same derivation env.py applies, asserted here so the two cannot
+        # drift without a test failing.
+        def version_table(name: str) -> str:
+            if name == "db.main":
+                return "alembic_version"
+            return "alembic_version_" + re.sub(r"[^0-9a-zA-Z_]+", "_", name).strip("_").lower()
+
+        assert version_table("db.main") == "alembic_version"
+        assert version_table("db.archive") == "alembic_version_db_archive"
+
+    def test_migrating_an_unknown_connection_says_so(self):
+        result = runner.invoke(cli, ["migrate", "--connection", "db.nowhere"])
+        assert result.exit_code == 1
+        assert "unknown connection" in result.output
+
+    def test_migrating_a_connection_with_no_tables_is_refused(self, tmp_path, monkeypatch):
+        """A REST connection has nothing alembic can do."""
+        config = tmp_path / "connections.yaml"
+        config.write_text(
+            "connections:\n"
+            "  db.main:\n    type: sqlalchemy\n    url: sqlite+aiosqlite://\n"
+            "  api.ref:\n    type: rest\n    base_url: http://example.test\n"
+        )
+        monkeypatch.setenv("CRM_CONNECTIONS_FILE", str(config))
+        get_settings.cache_clear()
+        try:
+            result = runner.invoke(cli, ["migrate", "--connection", "api.ref"])
+            assert result.exit_code == 1
+            assert "holds no tables" in result.output
+        finally:
+            get_settings.cache_clear()

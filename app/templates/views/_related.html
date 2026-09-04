@@ -15,7 +15,7 @@
 </div>
 
 {% if entry.page.items %}
-  <table class="data-table compact">
+  <table class="data-table compact stackable">
     <thead>
       <tr>{% for name in entry.columns %}<th>{{ target.field(name).label }}</th>{% endfor %}</tr>
     </thead>
@@ -24,7 +24,7 @@
         <tr>
           {% for name in entry.columns %}
             {% set field = target.field(name) %}
-            <td class="align-{{ field.align }}">
+            <td class="align-{{ field.align }}" data-label="{{ field.label }}">
               {% if loop.first %}
                 <a class="record-link" href="/r/{{ target.name }}/{{ row.pk }}">
                   {{ rf.display(target, field, row, templates) }}

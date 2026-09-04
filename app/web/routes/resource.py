@@ -40,6 +40,10 @@ from app.web.uploads import discard, store_uploads
 
 router = APIRouter(prefix="/r", tags=["resources"])
 
+#: Relation keys looked up per query. Under SQLite's 999-parameter ceiling with
+#: room for the scope filter's own parameters alongside them.
+LABEL_BATCH = 500
+
 
 # -- listing ---------------------------------------------------------------
 
@@ -159,24 +163,32 @@ async def _relation_labels(
     would have to consult it again on every read.
     """
     cached = view.relation_labels.setdefault(target.name, {})
-    missing = keys - cached.keys()
+    missing = sorted(keys - cached.keys(), key=str)
     if not missing:
         return {k: cached[k] for k in keys if k in cached}
 
-    query = target.build_query(
-        view.identity,
-        filter=Condition(target.pk, Op.IN, sorted(missing, key=str)),
-        page_size=min(len(missing), 500),
-        with_total=False,
-    )
-    try:
-        page = await target.provider.list(query, view.ctx)
-    except Exception:
-        # A failing lookup must not take down the list it decorates; the key is
-        # still shown and still links.
-        return {k: cached[k] for k in keys if k in cached}
+    # In batches, because an IN clause has a practical ceiling -- SQLite's is
+    # 999 parameters by default -- and because the page size has to be at least
+    # the number of keys asked for or the answer comes back short. Coming back
+    # short is the failure mode worth avoiding: the rows are still rendered,
+    # just with raw keys where a name belongs, which looks like missing data
+    # rather than a limit being hit.
+    for start in range(0, len(missing), LABEL_BATCH):
+        batch = missing[start : start + LABEL_BATCH]
+        query = target.build_query(
+            view.identity,
+            filter=Condition(target.pk, Op.IN, batch),
+            page_size=len(batch),
+            with_total=False,
+        )
+        try:
+            page = await target.provider.list(query, view.ctx)
+        except Exception:
+            # A failing lookup must not take down the list it decorates; the key
+            # is still shown and still links.
+            break
+        cached.update({str(r.pk): target.display_value(r) for r in page.items})
 
-    cached.update({str(r.pk): target.display_value(r) for r in page.items})
     return {k: cached[k] for k in keys if k in cached}
 
 

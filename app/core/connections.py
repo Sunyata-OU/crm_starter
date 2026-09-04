@@ -216,6 +216,17 @@ class ConnectionRegistry:
         for spec in specs.values():
             self.add(spec)
 
+    def use(self, name: str, handle: Any) -> None:
+        """Supply an already-open handle for ``name``.
+
+        For tests and for embedding, where the engine or client is built by the
+        host application and this registry should adopt it rather than open a
+        second one. The spec must already exist, so ``crm check-connections``
+        and the health page still know what type it is.
+        """
+        self.spec(name)
+        self._open[name] = handle
+
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> ConnectionRegistry:
         return cls(load_specs(config))

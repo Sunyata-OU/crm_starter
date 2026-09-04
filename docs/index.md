@@ -55,6 +55,7 @@ CRM_MODULES=demo_crm,demo_sales uv run crm dev
 | `demo_crm` | opt-in | companies, contacts |
 | `demo_sales` | opt-in | deals, activities — board, calendar, charts, custom actions |
 | `demo_remote` | opt-in | a REST-backed resource and a queued write |
+| `demo_archive` | opt-in | one resource served from two databases at once |
 
 `CRM_MODULES` is additive: it names the optional modules to switch on. The two
 `core_` modules load regardless, so no setting can produce an application
@@ -82,6 +83,7 @@ row-level scoping in action once the demo is on:
 | **Auth** | password, OIDC/SSO, gateway headers, API tokens — chained |
 | **Files** | uploads to local disk or S3-compatible storage, permission-checked downloads |
 | **Notifications** | in-app bell, email, webhooks, and scheduled reminders |
+| **Background jobs** | a durable queue with claims, retries, backoff and leases — `crm worker` |
 | **Passwords** | change, admin reset, emailed single-use reset links, lockout — *only where the auth provider owns the password* |
 | **Caching** | optional, shared or in-process, off by default |
 | **Also** | CSV export, JSON API, typeahead relations, quick filters, modal forms, migrations, health checks, per-request query counts |

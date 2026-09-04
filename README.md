@@ -55,6 +55,7 @@ CRM_MODULES=demo_crm,demo_sales uv run crm dev
 | `demo_crm` | opt-in | companies, contacts |
 | `demo_sales` | opt-in | deals, activities — board, calendar, charts, custom actions |
 | `demo_remote` | opt-in | a REST-backed resource and a queued write |
+| `demo_archive` | opt-in | one resource served from two databases at once |
 
 `CRM_MODULES` is additive: it names the optional modules to switch on. The two
 `core_` modules load regardless, so no setting can produce an application
@@ -82,8 +83,11 @@ row-level scoping in action once the demo is on:
 | **Auth** | password, OIDC/SSO, gateway headers, API tokens — chained |
 | **Files** | uploads to local disk or S3-compatible storage, permission-checked downloads |
 | **Notifications** | in-app bell, email, webhooks, and scheduled reminders |
+| **Background jobs** | a durable queue with claims, retries, backoff and leases — `crm worker` |
 | **Passwords** | change, admin reset, emailed single-use reset links, lockout — *only where the auth provider owns the password* |
 | **Caching** | optional, shared or in-process, off by default |
+| **Several databases** | a resource per database, or **one resource merged from several**, each migrated and seeded on its own |
+| **Mobile** | one stylesheet: lists become cards, the sidebar becomes a drawer, matrices scroll |
 | **Also** | CSV export, JSON API, typeahead relations, quick filters, modal forms, migrations, health checks, per-request query counts |
 
 ## The idea in one paragraph
@@ -95,6 +99,8 @@ that answers the query language, and each declares what it can do server-side.
 those. Between providers and resources sits the *capability shim*: whatever a
 backend cannot do — filter, sort, count, aggregate — it emulates in Python, so
 every view is written once against a full contract and works over any backend.
+Because providers compose, a resource may name several at once: `Union` merges
+two databases into one set of screens, and nothing above it knows.
 
 ## Commands
 
@@ -102,6 +108,7 @@ every view is written once against a full contract and works over any backend.
 uv run crm dev                 # development server
 uv run crm serve               # production server (refuses a bad config)
 uv run crm seed                # create and populate the demo database
+uv run crm seed -c db.archive  # ... a second database, its tables only
 uv run crm resources -v        # what is registered, and every field
 uv run crm capabilities        # what each backend does natively vs. emulated
 uv run crm check-connections   # open every connection and report health
@@ -109,8 +116,11 @@ uv run crm routes              # every URL served
 uv run crm token ci-runner     # mint an API token
 uv run crm new-resource orders # print a declaration to start from
 uv run crm migrate             # bring the database up to date
+uv run crm migrate --all       # ... every database, if there is more than one
 uv run crm make-migration "…"  # generate one from the model
 uv run crm passwd you@example  # set an account's password from the shell
+uv run crm worker              # run queued background jobs until stopped
+uv run crm jobs --failed       # what is in the queue, and what broke
 uv run crm notify-due          # deliver reminders that have come due
 uv run crm notify-test you@…   # check the notification channels
 ```
@@ -122,6 +132,7 @@ docker compose up                      # app + PostgreSQL on :8000
 docker compose run --rm seed           # load the sample data
 docker compose --profile storage up    # add MinIO, to try the S3 backend
 docker compose --profile mail up       # add Mailpit, to try email notifications
+docker compose --profile worker up     # add a job worker to drain the queue
 ```
 
 The image is multi-stage, runs as a non-root user, and carries a healthcheck
@@ -172,6 +183,7 @@ app/templates/fields/display/currency.html
 - [`docs/architecture.md`](docs/architecture.md) — how the layers fit together
 - [`docs/configuration.md`](docs/configuration.md) — every setting, and which file it belongs in
 - [`docs/providers.md`](docs/providers.md) — writing a provider for your own backend
+- [`docs/multiple-databases.md`](docs/multiple-databases.md) — resources across several databases, and one resource merged from several
 - [`docs/resources.md`](docs/resources.md) — the declaration reference
 - [`docs/auth.md`](docs/auth.md) — the four auth providers, RBAC and the audit trail
 - [`docs/files-and-notifications.md`](docs/files-and-notifications.md) — file storage backends and notification channels
@@ -192,3 +204,7 @@ on it.
 ```bash
 uv run ruff check . && uv run mypy app
 ```
+
+## License
+
+[MIT](LICENSE). Use it, fork it, ship it.

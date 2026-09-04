@@ -227,6 +227,11 @@ class _SortKey:
         return isinstance(other, _SortKey) and self.value == other.value
 
 
+#: Public name for the ordering wrapper, so other modules can order values the
+#: same way a sort does without reaching for a private class.
+SortKey = _SortKey
+
+
 def apply_sort(rows: Iterable[Any], sorts: Sequence[Sort]) -> list[Any]:
     """Stable multi-key sort. Applied right-to-left so the first key wins."""
     result = list(rows)

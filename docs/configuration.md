@@ -77,6 +77,8 @@ nothing. See [`auth.md`](auth.md#password-management).
 | `CRM_MAX_LOCAL_ROWS` | `5000` | Rows the capability shim may hold in memory to emulate a query stage. Exceeding it raises rather than truncating. |
 | `CRM_DEFAULT_PAGE_SIZE` | `25` | |
 | `CRM_DB_POOL_SIZE` / `CRM_DB_MAX_OVERFLOW` / `CRM_DB_POOL_RECYCLE` | `10` / `20` / `1800` | Read by `connections.yaml`. See [`scaling.md`](scaling.md#one-host). |
+| `CRM_ARCHIVE_ENABLED` | `false` | Turns on the second database `connections.yaml` defines. A disabled connection is never opened, so this costs nothing until you want it. |
+| `CRM_ARCHIVE_URL` | `sqlite+aiosqlite:///./crm-archive.db` | Its URL. Each database keeps its own migration history; see [`multiple-databases.md`](multiple-databases.md). |
 
 ## Caching
 
@@ -102,6 +104,7 @@ S3 credentials and bucket go in `connections.yaml`.
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `CRM_NOTIFY_CHANNELS` | `inapp` | `inapp`, `email`, `webhook`, `console`. The bell always works; the rest are opt-in. |
+| `CRM_NOTIFY_DELIVERY` | `background` | How a notification reaches its channels. `background` is a task on this worker's event loop — immediate, and lost if the worker stops. `queue` hands it to the durable job queue, which survives a restart **but needs `crm worker` running**. `inline` delivers before the request returns. |
 | `CRM_NOTIFY_BASE_URL` | `http://localhost:8000` | Used to build links in messages that leave the application. |
 | `CRM_SMTP_HOST` / `CRM_SMTP_PORT` | `localhost` / `25` | |
 | `CRM_SMTP_USERNAME` / `CRM_SMTP_PASSWORD` | — | |
