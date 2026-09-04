@@ -65,13 +65,26 @@ class Placement:
     claimed: dict[str, str]
     #: The connection owning everything unclaimed.
     default: str
+    #: Tables whose resource lives somewhere that has no tables at all -- a
+    #: Redis keyspace, an HTTP endpoint, a queue. Kept separately because the
+    #: "unclaimed belongs to the default" rule would otherwise create a table
+    #: in SQL for a resource that is deliberately not in SQL: harmless-looking,
+    #: permanently empty, and confusing to whoever finds it.
+    elsewhere: frozenset[str] = frozenset()
 
     def connection_for(self, table: str) -> str:
         return self.claimed.get(table, self.default)
 
+    def is_elsewhere(self, table: str) -> bool:
+        """Whether this table belongs to no database at all."""
+        return table in self.elsewhere
+
     def tables_on(self, connection: str, known: Iterable[str]) -> set[str]:
         """Of ``known``, the tables belonging to ``connection``."""
-        return {t for t in known if self.connection_for(t) == connection}
+        return {
+            t for t in known
+            if t not in self.elsewhere and self.connection_for(t) == connection
+        }
 
     @property
     def connections(self) -> tuple[str, ...]:
@@ -85,7 +98,17 @@ class Placement:
         return (self.default, *rest)
 
     def is_split(self) -> bool:
+        """Whether more than one database holds tables."""
         return len(self.connections) > 1
+
+    def needs_narrowing(self) -> bool:
+        """Whether the full schema is the wrong answer for any one database.
+
+        True when the schema is split, and also when something lives outside a
+        database entirely -- one resource on Redis is enough to make "create
+        every declared table here" wrong, even with a single database.
+        """
+        return self.is_split() or bool(self.elsewhere)
 
 
 def placement(registry, *, default: str = DEFAULT_CONNECTION) -> Placement:
@@ -97,23 +120,29 @@ def placement(registry, *, default: str = DEFAULT_CONNECTION) -> Placement:
     """
     connections = getattr(registry, "connections", None)
     claimed: dict[str, str] = {}
+    elsewhere: set[str] = set()
 
     for resource in registry:
         for connection, target in _refs(resource):
             if not connection or not target:
                 continue
-            # Only connections that actually hold tables. Skipping the rest
-            # here means a resource backed by a REST endpoint does not put a
-            # phantom table into anyone's migration.
+            # A connection that holds no tables places nothing to migrate --
+            # but it does mean the name is spoken for. Recording that is what
+            # stops the default connection adopting it as an unclaimed table.
             if (
                 connections is not None
                 and connection in connections
                 and connections.spec(connection).type not in TABLE_TYPES
             ):
+                elsewhere.add(target)
                 continue
             claimed[target] = connection
 
-    return Placement(claimed=claimed, default=default)
+    # A table both placed on a database and named by a non-table connection is
+    # on the database: something declared it there deliberately, and the other
+    # reference is a second resource reading the same name from elsewhere.
+    elsewhere -= set(claimed)
+    return Placement(claimed=claimed, default=default, elsewhere=frozenset(elsewhere))
 
 
 def metadata_for(source: MetaData, tables: set[str]) -> MetaData:

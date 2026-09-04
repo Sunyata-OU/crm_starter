@@ -181,3 +181,33 @@ class TestPerDatabaseMigrations:
             assert "holds no tables" in result.output
         finally:
             get_settings.cache_clear()
+
+    def test_check_connections_loads_modules_first(self, tmp_path, monkeypatch):
+        """A module may contribute a connection type of its own.
+
+        Without the import, that type is unknown and its connection is reported
+        as broken when the only thing wrong is that nobody loaded the code --
+        which sends you looking at the server rather than at the setting.
+        """
+        import app.cli as cli_module
+
+        called: list[object] = []
+
+        def fake_select(enabled=None):
+            called.append(enabled)
+            return []
+
+        monkeypatch.setattr(cli_module, "get_settings", get_settings)
+        monkeypatch.setattr("app.core.modules.select", fake_select)
+
+        config = tmp_path / "connections.yaml"
+        config.write_text(
+            "connections:\n  db.main:\n    type: sqlalchemy\n    url: sqlite+aiosqlite://\n"
+        )
+        monkeypatch.setenv("CRM_CONNECTIONS_FILE", str(config))
+        get_settings.cache_clear()
+        try:
+            runner.invoke(cli, ["check-connections"])
+        finally:
+            get_settings.cache_clear()
+        assert called, "check-connections did not load modules before reading connections"

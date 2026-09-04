@@ -87,7 +87,7 @@ def target_metadata():
     from app.main import build_registry
 
     place = placement(build_registry(get_settings()))
-    if not place.is_split():
+    if not place.needs_narrowing():
         return metadata
     mine = place.tables_on(connection_name(), metadata.tables)
     return metadata_for(metadata, mine)

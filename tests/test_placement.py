@@ -196,3 +196,54 @@ class TestForeignKeysAcrossDatabases:
         problems = unresolved_foreign_keys(schema, place)
         assert len(problems) == 1
         assert "archived_deals.company_id references companies" in problems[0]
+
+
+class TestResourcesThatLiveOutsideADatabase:
+    """A resource on Redis, an HTTP endpoint or a queue has no table.
+
+    The "unclaimed tables belong to the default connection" rule is what makes
+    a single-database deployment need no configuration, and it is exactly the
+    rule that gets this wrong: left alone, it adopts the name and creates a
+    permanently empty table in SQL for something deliberately not in SQL.
+    """
+
+    def _split_registry(self):
+        connections = _connections(db__main="sqlalchemy", redis__jobs="redis")
+        return _registry(
+            _resource("deals", "db.main#deals"),
+            _resource("jobs", "redis.jobs#jobs"),
+            connections=connections,
+        )
+
+    def test_the_table_is_not_adopted_by_the_default(self):
+        place = placement(self._split_registry())
+        assert place.is_elsewhere("jobs")
+        assert "jobs" not in place.tables_on("db.main", ["deals", "jobs", "users"])
+
+    def test_the_rest_of_the_schema_is_unaffected(self):
+        place = placement(self._split_registry())
+        assert place.tables_on("db.main", ["deals", "jobs", "users"]) == {"deals", "users"}
+
+    def test_one_such_resource_is_enough_to_need_narrowing(self):
+        """Even with a single database: "create every declared table here" is
+        already the wrong answer."""
+        place = placement(self._split_registry())
+        assert place.is_split() is False, "one database is still one database"
+        assert place.needs_narrowing() is True
+
+    def test_an_ordinary_deployment_still_narrows_nothing(self):
+        place = placement(_registry(_resource("deals", "db.main#deals")))
+        assert place.needs_narrowing() is False
+
+    def test_a_table_placed_on_a_database_wins_over_a_reference_from_outside(self):
+        """Two resources may read the same name from different places; if one
+        of them is a real table, the table is real."""
+        connections = _connections(db__main="sqlalchemy", api__ref="rest")
+        registry = _registry(
+            _resource("deals", "db.main#deals"),
+            _resource("deals_api", "api.ref#deals"),
+            connections=connections,
+        )
+        place = placement(registry)
+        assert place.is_elsewhere("deals") is False
+        assert place.connection_for("deals") == "db.main"

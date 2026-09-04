@@ -122,7 +122,7 @@ def seed(
 
     place = placement(registry)
     tables = (
-        place.tables_on(connection, metadata.tables) if place.is_split() else None
+        place.tables_on(connection, metadata.tables) if place.needs_narrowing() else None
     )
     if tables is not None and not tables:
         _fail(f"no declared tables live on connection {connection!r}; nothing to seed")
@@ -201,8 +201,17 @@ def resources(
 def check_connections() -> None:
     """Open every configured connection and report whether it works."""
     from app.core.connections import ConnectionRegistry
+    from app.core.modules import select as select_modules
 
     settings = get_settings()
+    # Importing the enabled modules first, because a module may contribute a
+    # connection type of its own -- and without the import, the type it
+    # registers is unknown and its connection is reported as broken when the
+    # only thing wrong is that nobody had loaded the code.
+    try:
+        select_modules(enabled=settings.modules or None)
+    except Exception as exc:
+        typer.secho(f"warning: could not load modules: {exc}", fg=typer.colors.YELLOW, err=True)
     registry = ConnectionRegistry.from_file(settings.connections_path)
 
     if not registry.names:

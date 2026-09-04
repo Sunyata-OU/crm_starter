@@ -166,39 +166,40 @@ declared in `connections.yaml` like any other, and because the placement map is
 derived from the resource declarations, `crm migrate --all` then covers the
 queue's database too without being told about it separately.
 
-### Could it be Redis instead?
-
-Not today, and it is worth being precise about why rather than treating it as a
-gap.
+### On Redis instead
 
 The queue needs exactly one thing from its backing store: a **conditional
 write**. `update_if` is what makes claiming safe, and it is the only reason two
 workers cannot run the same job. Any provider offering it can hold the queue —
 which is why the tests in `tests/test_jobs.py` run against `MemoryProvider` in
-milliseconds rather than needing a database. Redis can express that (`WATCH` /
-`MULTI`, or a Lua script), so a `RedisProvider` implementing the provider
-contract would work, and nothing in `app/jobs/` would change.
+milliseconds rather than needing a database.
 
-What such a provider does *not* get you is better durability. Redis persistence
-is `RDB` snapshots or `AOF` with an fsync policy, and the default policy loses
-up to a second of writes on a hard stop. For a cache that is the correct
-trade-off, which is exactly what Redis is already used for here. For a table
-whose whole purpose is that an accepted job is not lost, "usually durable" is
-the property being paid to avoid. A queue on the database you already run is
-slower per operation and does not lose the row.
+Redis has a real one, in `WATCH`/`MULTI`, and a Redis provider ships in the
+companion [`crm_starter_modules`][modules] repository:
 
-The case for Redis is throughput — tens of thousands of jobs a second, where
-polling a table stops being cheap. If you are there, a broker is the better
-answer than a Redis list, and `AMQPWriteProvider` is already the shape of that:
-publish the job, let the broker deliver it. What this queue optimises for is
-the far more common case of a few thousand jobs a day that must not be lost,
-where one indexed query a second is not worth a second piece of infrastructure.
+```bash
+uv pip install 'crm-starter-modules[redis]'
+CRM_MODULES=db_redis CRM_JOBS_CONNECTION=redis.jobs uv run crm worker
+```
 
-So: **Redis for the cache, the database for the queue** is the shipped
-arrangement, and it is a choice rather than a limitation. If you want the
-Redis-backed provider anyway, the contract to satisfy is
-[`docs/providers.md`](providers.md) plus `update_if`, and the contract suite
-will tell you when you have it.
+Nothing in `app/jobs/` changes. The claim query becomes one set intersection and
+one sorted-set range instead of a table scan, which is what makes it worth
+doing on a busy queue.
+
+**It is not the durable choice.** Redis persistence is `RDB` snapshots or `AOF`
+with an fsync policy, and the default policy loses about a second of writes on
+a hard stop. For a cache that is the correct trade-off — which is exactly what
+Redis is already used for here. For a queue whose whole purpose is that an
+accepted job is not lost, "usually durable" is the property being paid to
+avoid. Run it with `appendonly yes` and `appendfsync always` if the jobs
+matter, and know that it is still weaker than the database you already run.
+
+So: Redis is the answer to **throughput**, not to durability, and
+`CRM_JOBS_CONNECTION=db.main` remains the right default. Past the point where
+even that is not enough, a broker beats a Redis list, and `AMQPWriteProvider`
+is already the shape of it.
+
+[modules]: https://github.com/Sunyata-OU/crm_starter_modules
 
 ## Queued notification delivery
 
