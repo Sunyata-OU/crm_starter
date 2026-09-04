@@ -83,7 +83,7 @@ row-level scoping in action once the demo is on:
 | **Auth** | password, OIDC/SSO, gateway headers, API tokens — chained |
 | **Files** | uploads to local disk or S3-compatible storage, permission-checked downloads |
 | **Notifications** | in-app bell, email, webhooks, and scheduled reminders |
-| **Background jobs** | a durable queue with claims, retries, backoff and leases — `crm worker` |
+| **Background jobs** | a durable queue with claims, retries, backoff and leases — `crm worker`, on any store with a conditional write |
 | **Passwords** | change, admin reset, emailed single-use reset links, lockout — *only where the auth provider owns the password* |
 | **Caching** | optional, shared or in-process, off by default |
 | **Several databases** | a resource per database, or **one resource merged from several**, each migrated and seeded on its own |
@@ -151,6 +151,13 @@ and would otherwise report a healthy worker as unhealthy for ever — the
    `register(registry)` function — `uv run crm new-resource orders` prints one.
 2. Declare a `Resource` and add it to the registry.
 3. Restart. It appears in the navigation with a full set of screens.
+
+A module does not have to live in this repository. Any installed distribution
+advertising a `crm.modules` entry point is discovered too, which is how a
+module ships as its own package — the companion
+[`crm_starter_modules`](https://github.com/Sunyata-OU/crm_starter_modules)
+repository is the worked example, and where the Redis provider for the job
+queue lives.
 
 A module package may also carry two files the loader looks for by name:
 
