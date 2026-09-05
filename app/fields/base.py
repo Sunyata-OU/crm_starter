@@ -45,7 +45,11 @@ class Choice:
 
 
 #: Choices may be a fixed list or resolved per request (e.g. from another table).
-ChoiceSource = Sequence[Any] | Callable[[Ctx], Sequence[Any]] | None
+#: ``ctx`` is optional because choices are also resolved outside a request:
+#: a display template rendering a stored value as its label, and the filter
+#: builder listing what a column can be filtered to. A dynamic source has
+#: to cope with getting ``None``.
+ChoiceSource = Sequence[Any] | Callable[[Ctx | None], Sequence[Any]] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,8 +229,13 @@ class Field:
 
     # -- choices ------------------------------------------------------------
 
-    def choices(self, ctx: Ctx) -> tuple[Choice, ...]:
-        """Options for select-style rendering. Empty for free-text fields."""
+    def choices(self, ctx: Ctx | None = None) -> tuple[Choice, ...]:
+        """Options for select-style rendering. Empty for free-text fields.
+
+        ``ctx`` is optional: a display template turning a stored value into its
+        label, and the filter builder listing what a column can be filtered to,
+        both ask outside any particular read.
+        """
         return ()
 
     # -- misc ---------------------------------------------------------------

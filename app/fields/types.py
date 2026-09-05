@@ -237,7 +237,7 @@ class BooleanField(Field):
             return False
         self.fail("Enter yes or no.")
 
-    def choices(self, ctx: Ctx) -> tuple[Choice, ...]:
+    def choices(self, ctx: Ctx | None = None) -> tuple[Choice, ...]:
         return (Choice(True, "Yes"), Choice(False, "No"))
 
 
@@ -371,7 +371,7 @@ class ChoiceFieldMixin:
 
     _choices: ChoiceSource
 
-    def choices(self, ctx: Ctx) -> tuple[Choice, ...]:
+    def choices(self, ctx: Ctx | None = None) -> tuple[Choice, ...]:
         source = self._choices
         if source is None:
             return ()
@@ -379,7 +379,7 @@ class ChoiceFieldMixin:
             source = source(ctx)
         return tuple(Choice.coerce(item) for item in source)
 
-    def choice_map(self, ctx: Ctx) -> dict[Any, Choice]:
+    def choice_map(self, ctx: Ctx | None = None) -> dict[Any, Choice]:
         """Value-to-choice lookup, for rendering a stored value as its label."""
         return {c.value: c for c in self.choices(ctx)}
 
@@ -518,7 +518,7 @@ class TimezoneField(ChoiceFieldMixin, Field):
         super().__init__(name, **kw)
         self._choices = None
 
-    def choices(self, ctx: Ctx) -> tuple[Choice, ...]:
+    def choices(self, ctx: Ctx | None = None) -> tuple[Choice, ...]:
         from app.core.clock import timezone_choices
 
         return tuple(Choice(value, label) for value, label in timezone_choices())
