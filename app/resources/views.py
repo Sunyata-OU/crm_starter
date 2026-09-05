@@ -9,7 +9,7 @@ its source or duplicating the whole declaration.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any, Literal, Self
@@ -469,6 +469,7 @@ class SearchSpec:
         fields: Sequence[str] = (),
         filters: Sequence[str] = (),
         quick_filters: Sequence[QuickFilter] = (),
+        value_aliases: Mapping[str, Any] | None = None,
         group_by: Sequence[str] = (),
         placeholder: str = "Search",
     ) -> None:
@@ -477,5 +478,10 @@ class SearchSpec:
         #: Columns offered in the filter builder. Empty means "every filterable field".
         self.filters = tuple(filters)
         self.quick_filters = list(quick_filters)
+        #: Named filter values, written ``@name`` in the query string and
+        #: resolved per request: ``{"my_region": lambda identity: ...}``.
+        #: Shadows a built-in of the same name, so a resource whose owner
+        #: column holds something other than an email can redefine ``@me``.
+        self.value_aliases = dict(value_aliases or {})
         self.group_by = tuple(group_by)
         self.placeholder = placeholder

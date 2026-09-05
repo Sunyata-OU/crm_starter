@@ -13,9 +13,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Request
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import RedirectResponse, Response, StreamingResponse
 
 from app.auth.permissions import require_can
 from app.core.errors import NotFound, UnsupportedOperation, ValidationFailed
@@ -35,7 +36,7 @@ from app.core.results import Record, WriteStatus
 from app.resources.form_engine import FormEngine
 from app.resources.resource import Resource
 from app.web.deps import View, build_view
-from app.web.filters import active_filters, parse_filters, parse_sort
+from app.web.filters import canonical_params, has_panel_params, parse_filters, parse_sort
 from app.web.uploads import discard, store_uploads
 
 router = APIRouter(prefix="/r", tags=["resources"])
@@ -54,6 +55,9 @@ async def list_records(resource_name: str, view: View = Depends(build_view)) -> 
     resource = view.resource(resource_name)
     require_can(resource, "read", view.identity)
 
+    if (target := _canonical_url(view, resource)) is not None:
+        return RedirectResponse(target, status_code=303)
+
     kind = view.param("view") or _default_view_kind(resource)
     spec = resource.view(kind) if resource.has_view(kind) else resource.view("list")
 
@@ -66,6 +70,22 @@ async def list_records(resource_name: str, view: View = Depends(build_view)) -> 
             return await _render_chart(view, resource, spec)
 
     return await _render_list(view, resource, spec)
+
+
+def _canonical_url(view: View, resource: Resource) -> str | None:
+    """Where a filter-builder submission should be redirected to, if anywhere.
+
+    The panel posts indexed triples because a ``<select>`` cannot rename the
+    input beside it. Bouncing them into the readable ``f.field__op=value`` form
+    keeps that form the only one that ever reaches the address bar, the back
+    button or a shared link -- and it costs one redirect on Apply, not one per
+    page of results.
+    """
+    params = view.request.query_params
+    if not has_panel_params(params):
+        return None
+    query = urlencode(canonical_params(list(params.multi_items()), resource))
+    return f"{view.request.url.path}?{query}" if query else view.request.url.path
 
 
 def _default_view_kind(resource: Resource) -> str:
@@ -95,7 +115,7 @@ def _build_query(view: View, resource: Resource, spec: Any) -> ListQuery:
     return resource.build_query(
         view.identity,
         filter=and_(
-            parse_filters(view.request.query_params, resource),
+            parse_filters(view.request.query_params, resource, view.identity),
             _quick_filter(view, resource),
         ),
         search=view.param("q"),
@@ -217,7 +237,6 @@ async def _render_list(view: View, resource: Resource, spec: Any) -> Response:
         "query": query,
         "spec": spec,
         "columns": _visible_columns(resource, spec, view),
-        "chips": active_filters(dict(view.request.query_params), resource),
         "views": resource.switchable_views(),
         "current_view": spec.name,
         "can_create": resource.can("create", view.identity),
@@ -314,7 +333,6 @@ async def _render_board(view: View, resource: Resource, spec: Any) -> Response:
         views=resource.switchable_views(),
         current_view=spec.name,
         can_update=resource.can("update", view.identity),
-        chips=active_filters(dict(view.request.query_params), resource),
         search_term=view.param("q"),
     )
 
@@ -376,7 +394,7 @@ async def _render_calendar(view: View, resource: Resource, spec: Any) -> Respons
     query = resource.build_query(
         view.identity,
         filter=and_(
-            parse_filters(view.request.query_params, resource),
+            parse_filters(view.request.query_params, resource, view.identity),
             Condition(spec.start_field, Op.GTE, first.isoformat()),
             Condition(spec.start_field, Op.LT, last.isoformat()),
         ),
@@ -410,7 +428,7 @@ async def _render_calendar(view: View, resource: Resource, spec: Any) -> Respons
 async def _render_chart(view: View, resource: Resource, spec: Any) -> Response:
     """An aggregate drawn as a chart or laid out as a pivot table."""
     scope = resource.policy.scope(view.identity)
-    user_filter = parse_filters(view.request.query_params, resource)
+    user_filter = parse_filters(view.request.query_params, resource, view.identity)
 
     if spec.kind == "chart":
         agg = AggSpec(

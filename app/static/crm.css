@@ -221,16 +221,37 @@ code { font-family: var(--mono); font-size: .92em; }
 .filter-panel summary { list-style: none; cursor: pointer; }
 .filter-panel summary::-webkit-details-marker { display: none; }
 .filter-form {
-  position: absolute; right: 0; top: calc(100% + .4rem); z-index: 25; width: 300px;
+  position: absolute; right: 0; top: calc(100% + .4rem); z-index: 25; width: 320px;
+  max-height: min(70vh, 34rem); overflow-y: auto;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: var(--shadow-lg); padding: .85rem; display: flex; flex-direction: column; gap: .6rem;
 }
-.filter-row { display: flex; flex-direction: column; gap: .2rem; font-size: .85rem; }
+/* Until Alpine has built the rows, the form is an empty box -- hide it rather
+   than flash one. `x-cloak` is removed the moment the component initialises. */
+[x-cloak] { display: none !important; }
+.filter-row { display: flex; flex-direction: column; gap: .25rem; font-size: .85rem; }
+/* Each condition reads as one block, so three stacked menus do not look like
+   three unrelated filters. */
+.filter-form .filter-row {
+  padding: .5rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+}
 .filter-row input, .filter-row select {
   padding: .35rem .5rem; border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: inherit;
 }
+.filter-row-head { display: flex; align-items: center; gap: .35rem; }
+.filter-row-head .filter-field { flex: 1; min-width: 0; }
+.filter-drop {
+  border: 0; background: none; cursor: pointer; color: var(--text-muted);
+  font-size: 1rem; line-height: 1; padding: .2rem .3rem; border-radius: var(--radius-sm);
+}
+.filter-drop:hover { background: var(--surface); color: var(--text); }
+.filter-value { display: flex; flex-direction: column; gap: .25rem; }
+.filter-alias { font-size: .8rem; color: var(--text-muted); }
+.filter-add { align-self: flex-start; font-size: .85rem; }
 .filter-actions { display: flex; gap: .5rem; margin-top: .3rem; }
+.filter-form-basic { position: static; width: auto; box-shadow: none; border: 0; padding: 0; }
 
 .chips { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: .75rem; }
 .chip {

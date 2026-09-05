@@ -235,7 +235,18 @@ class View:
     def render_view(
         self, resource: Resource, kind: str, *, status_code: int = 200, **context: Any
     ) -> HTMLResponse:
-        """Render a resource view through the override chain."""
+        """Render a resource view through the override chain.
+
+        The toolbar above a list, a board, a calendar and a chart is the same
+        toolbar, so what it needs is supplied here rather than by each handler
+        -- one of them forgetting would silently drop the filter panel from
+        that view alone.
+        """
+        from app.web.filters import active_filters, filter_schema
+
+        context.setdefault("chips", active_filters(dict(self.request.query_params), resource))
+        context.setdefault("filter_schema", filter_schema(resource, self.identity))
+
         template = self.templates.view_template(resource.name, kind)
         return self.render(
             template, status_code=status_code, resource=resource, view_kind=kind, **context

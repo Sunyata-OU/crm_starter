@@ -218,6 +218,138 @@
     if (event.key === "Escape") crm.closeModal();
   });
 
+  /* -- filter builder ------------------------------------------------------
+     Rows are assembled here rather than server-side for one reason: which
+     operators a row may offer depends on the column chosen *in that row*, and
+     which value widget it needs depends on the operator chosen next to it.
+     Neither is known when the page is rendered.
+
+     Nothing is submitted from this state directly. Each row emits three plain
+     inputs -- fc.N.field, fc.N.op, fc.N.value -- which the server rewrites
+     into the readable ?f.field__op=value form and redirects to. The visible
+     controls are deliberately unnamed, so a multi-select, an alias picker and
+     a text box can all feed the same single value.
+
+     Without JavaScript the <noscript> form still filters. */
+
+  crm.filterPanel = function (schema, applied) {
+    return {
+      schema: schema || [],
+      rows: [],
+      seq: 0,
+
+      init() {
+        (applied || []).forEach((condition) => this.adopt(condition));
+        if (!this.rows.length) this.add();
+      },
+
+      /* -- what the current selections mean -- */
+
+      spec(row) {
+        return this.schema.find((f) => f.name === row.field) || null;
+      },
+      opsFor(row) {
+        const spec = this.spec(row);
+        return spec ? spec.ops : [];
+      },
+      arity(row) {
+        const op = this.opsFor(row).find((o) => o.value === row.op);
+        return op ? op.arity : "one";
+      },
+      aliases(row) {
+        const spec = this.spec(row);
+        return spec && this.arity(row) !== "none" ? spec.aliases : [];
+      },
+      /* A range or a list is typed as free text: no browser offers a date
+         picker that holds two dates. */
+      inputType(row) {
+        const spec = this.spec(row);
+        return this.arity(row) === "one" && spec ? spec.input : "text";
+      },
+      placeholder(row) {
+        const arity = this.arity(row);
+        if (arity === "range") return "from, to";
+        if (arity === "many") return "comma, separated";
+        return "";
+      },
+      picksFromList(row) {
+        const spec = this.spec(row);
+        return !!(spec && spec.choices.length && !spec.relation);
+      },
+
+      /* -- rows -- */
+
+      blank(fieldName) {
+        const spec = this.schema.find((f) => f.name === fieldName) || this.schema[0];
+        return {
+          uid: this.seq++,
+          field: spec ? spec.name : "",
+          op: spec && spec.ops.length ? spec.ops[0].value : "eq",
+          value: "",
+          values: [],
+          alias: "",
+          options: [],
+        };
+      },
+      add() {
+        if (this.schema.length) this.rows.push(this.blank());
+      },
+      remove(index) {
+        this.rows.splice(index, 1);
+        if (!this.rows.length) this.add();
+      },
+      adopt(condition) {
+        const spec = this.schema.find((f) => f.name === condition.field);
+        if (!spec) return;
+        const row = this.blank(condition.field);
+        if (spec.ops.some((o) => o.value === condition.op)) row.op = condition.op;
+        const raw = String(condition.value == null ? "" : condition.value);
+        if (raw.slice(0, 1) === "@" && raw.slice(0, 2) !== "@@") row.alias = raw;
+        else if (this.arity(row) === "many" && this.picksFromList(row)) {
+          row.values = raw.split(",").map((s) => s.trim()).filter(Boolean);
+        } else row.value = raw;
+        this.rows.push(row);
+      },
+      onFieldChange(row) {
+        // The previous operator may not exist on the new column, and the
+        // previous value almost certainly means nothing there.
+        const ops = this.opsFor(row);
+        if (!ops.some((o) => o.value === row.op)) row.op = ops.length ? ops[0].value : "eq";
+        row.value = "";
+        row.values = [];
+        row.alias = "";
+        row.options = [];
+      },
+
+      /* The single value actually submitted for a row. */
+      submitted(row) {
+        if (this.arity(row) === "none") return "";
+        if (row.alias) return row.alias;
+        if (this.arity(row) === "many" && this.picksFromList(row)) return row.values.join(",");
+        return row.value;
+      },
+
+      /* A relation filters on a key, so the box suggests records from the
+         target resource -- the same list its form input offers, fetched here
+         rather than through HTMX because these rows are created by Alpine
+         and HTMX only wires up markup it swapped in itself. */
+      async suggest(row) {
+        const spec = this.spec(row);
+        if (!spec || !spec.relation) return;
+        const url = "/r/" + encodeURIComponent(spec.relation) +
+          "/options?limit=20&q=" + encodeURIComponent(row.value || "");
+        try {
+          const response = await fetch(url, { headers: { Accept: "application/json" } });
+          if (!response.ok) return;
+          const body = await response.json();
+          row.options = body.options || [];
+        } catch (error) {
+          row.options = [];
+        }
+      },
+    };
+  };
+
   /* -- theme -------------------------------------------------------------- */
 
   crm.toggleTheme = function () {

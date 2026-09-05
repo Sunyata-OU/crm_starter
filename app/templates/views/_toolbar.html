@@ -43,35 +43,152 @@
   {% endif %}
 
   <div class="toolbar-right">
-    {% if resource.filterable_fields() %}
+    {% if filter_schema %}
+      {#
+        The filter builder. Each row is (column, operator, value), and all
+        three menus depend on each other -- which is why the row markup is
+        built by Alpine from `filter_schema` rather than rendered here.
+
+        The form submits indexed triples (fc.0.field, fc.0.op, fc.0.value);
+        the server rewrites them into the readable ?f.amount__gte=1000 form
+        and redirects, so a shared or bookmarked link never carries this
+        encoding. The <noscript> form below submits that readable form
+        directly, one condition per column.
+      #}
       <details class="filter-panel">
         <summary class="btn btn-sm">Filters {% if chips %}<span class="badge">{{ chips|length }}</span>{% endif %}</summary>
-        <form class="filter-form" method="get" action="/r/{{ resource.name }}">
-          {% if current_view and current_view != 'list' %}<input type="hidden" name="view" value="{{ current_view }}">{% endif %}
-          {% if search_term %}<input type="hidden" name="q" value="{{ search_term }}">{% endif %}
-          {% for field in resource.filterable_fields() %}
-            <label class="filter-row">
-              <span>{{ field.label }}</span>
-              {% set choices = field.choices(none) %}
-              {% if choices %}
-                <select name="f.{{ field.name }}">
-                  <option value="">Any</option>
-                  {% for c in choices %}
-                    <option value="{{ c.value }}"
-                      {% if request.query_params.get('f.' ~ field.name) == c.value|string %}selected{% endif %}>{{ c.label }}</option>
-                  {% endfor %}
-                </select>
-              {% else %}
-                <input type="text" name="f.{{ field.name }}__icontains"
-                       value="{{ request.query_params.get('f.' ~ field.name ~ '__icontains', '') }}">
-              {% endif %}
-            </label>
+
+        <form class="filter-form" method="get" action="/r/{{ resource.name }}"
+              x-data="crm.filterPanel({{ filter_schema|tojson }}, {{ chips|tojson }})" x-cloak>
+          {# A GET form replaces the whole query string, so everything the page
+             is not about to rewrite has to be repeated here -- the search
+             term, the view, the sort, the calendar's month. Listed by
+             exclusion so a parameter added later is carried without anyone
+             remembering to come back for it. #}
+          {% for key, value in request.query_params.multi_items() %}
+            {% if not key.startswith('f.') and not key.startswith('fc.') and key != 'page' %}
+              <input type="hidden" name="{{ key }}" value="{{ value }}">
+            {% endif %}
           {% endfor %}
+
+          <template x-for="(row, index) in rows" :key="row.uid">
+            <div class="filter-row">
+              <div class="filter-row-head">
+                <select class="filter-field" :name="`fc.${index}.field`"
+                        x-model="row.field" @change="onFieldChange(row)"
+                        aria-label="Column to filter on">
+                  <template x-for="f in schema" :key="f.name">
+                    <option :value="f.name" x-text="f.label"></option>
+                  </template>
+                </select>
+                <button type="button" class="filter-drop" @click="remove(index)"
+                        :aria-label="`Remove the ${row.field} condition`">×</button>
+              </div>
+
+              <select class="filter-op" :name="`fc.${index}.op`" x-model="row.op"
+                      aria-label="Comparison">
+                <template x-for="o in opsFor(row)" :key="o.value">
+                  <option :value="o.value" x-text="o.label"></option>
+                </template>
+              </select>
+
+              {# "is empty" takes no value, so it renders none. #}
+              <template x-if="arity(row) !== 'none'">
+                <div class="filter-value">
+                  {# One value from a fixed list. #}
+                  <template x-if="picksFromList(row) && arity(row) === 'one' && !row.alias">
+                    <select x-model="row.value" aria-label="Value">
+                      <option value="">Choose…</option>
+                      <template x-for="c in spec(row).choices" :key="c.value">
+                        <option :value="c.value" x-text="c.label"></option>
+                      </template>
+                    </select>
+                  </template>
+
+                  {# Several from a fixed list, for "is any of". #}
+                  <template x-if="picksFromList(row) && arity(row) === 'many' && !row.alias">
+                    <select multiple size="4" x-model="row.values" aria-label="Values">
+                      <template x-for="c in spec(row).choices" :key="c.value">
+                        <option :value="c.value" x-text="c.label"></option>
+                      </template>
+                    </select>
+                  </template>
+
+                  {# Anything typed: text, a number, a date, or a relation key
+                     with suggestions from the resource it points at. #}
+                  <template x-if="!picksFromList(row) && !row.alias">
+                    <input :type="inputType(row)" x-model="row.value"
+                           :placeholder="placeholder(row)"
+                           :list="spec(row) && spec(row).relation ? `opts_${row.uid}` : null"
+                           @focus="suggest(row)" @input.debounce.250ms="suggest(row)"
+                           autocomplete="off" aria-label="Value">
+                  </template>
+                  <template x-if="spec(row) && spec(row).relation">
+                    <datalist :id="`opts_${row.uid}`">
+                      <template x-for="o in row.options" :key="o.value">
+                        <option :value="o.value" x-text="o.label"></option>
+                      </template>
+                    </datalist>
+                  </template>
+
+                  {# Named values -- "me", "start of this month" -- resolved
+                     per request, so the saved link stays true tomorrow. #}
+                  <template x-if="aliases(row).length">
+                    <select class="filter-alias" x-model="row.alias"
+                            :aria-label="`Named value for ${row.field}`">
+                      <option value="">a value…</option>
+                      <template x-for="a in aliases(row)" :key="a.value">
+                        <option :value="a.value" x-text="a.label"></option>
+                      </template>
+                    </select>
+                  </template>
+                </div>
+              </template>
+
+              <input type="hidden" :name="`fc.${index}.value`" :value="submitted(row)">
+            </div>
+          </template>
+
+          <button type="button" class="linklike filter-add" @click="add()">+ Add condition</button>
+
           <div class="filter-actions">
             <button class="btn btn-primary btn-sm" type="submit">Apply</button>
             <a class="btn btn-sm" href="/r/{{ resource.name }}">Clear</a>
           </div>
         </form>
+
+        <noscript>
+          <form class="filter-form filter-form-basic" method="get" action="/r/{{ resource.name }}">
+            {% if current_view and current_view != 'list' %}<input type="hidden" name="view" value="{{ current_view }}">{% endif %}
+            {% if search_term %}<input type="hidden" name="q" value="{{ search_term }}">{% endif %}
+            {% for field in resource.filterable_fields() %}
+              <label class="filter-row">
+                <span>{{ field.label }}</span>
+                {% set choices = field.choices(none) %}
+                {% if choices %}
+                  <select name="f.{{ field.name }}">
+                    <option value="">Any</option>
+                    {% for c in choices %}
+                      <option value="{{ c.value }}"
+                        {% if request.query_params.get('f.' ~ field.name) == c.value|string %}selected{% endif %}>{{ c.label }}</option>
+                    {% endfor %}
+                  </select>
+                {% else %}
+                  {# Substring where the column supports it, equality where it
+                     does not -- a relation holds a key, and "contains" on a
+                     key is an operator its provider would refuse. #}
+                  {% set suffix = '__icontains' if 'icontains' in field.filter_ops() else '' %}
+                  <input type="text" name="f.{{ field.name }}{{ suffix }}"
+                         value="{{ request.query_params.get('f.' ~ field.name ~ suffix, '') }}">
+                {% endif %}
+              </label>
+            {% endfor %}
+            <div class="filter-actions">
+              <button class="btn btn-primary btn-sm" type="submit">Apply</button>
+              <a class="btn btn-sm" href="/r/{{ resource.name }}">Clear</a>
+            </div>
+          </form>
+        </noscript>
       </details>
     {% endif %}
     <a class="btn btn-sm" href="/r/{{ resource.name }}/export.csv{{ request|querystring() }}"
@@ -84,7 +201,7 @@
     {% for chip in chips %}
       <a class="chip" href="{{ request|querystring(**{chip.key: None}) }}">
         <span class="chip-label">{{ chip.label }} {{ chip.op_label }}</span>
-        <strong>{{ chip.value or '—' }}</strong>
+        {% if chip.value_label %}<strong>{{ chip.value_label }}</strong>{% endif %}
         <span class="chip-x" aria-hidden="true">×</span>
         <span class="sr-only">Remove this filter</span>
       </a>

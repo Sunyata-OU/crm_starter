@@ -154,13 +154,70 @@ search=SearchSpec(
     fields=("name", "notes"),               # what free-text search looks in
     filters=("stage", "owner", "source"),   # what the filter panel offers
     group_by=("stage", "owner"),
+    value_aliases={"my_region": lambda identity: identity.claims["region"]},
 )
 ```
 
 Filters travel in the URL — `?f.stage=won&f.amount__gte=1000&q=acme` — so a
 filtered list is a shareable link and the back button works. A parameter naming
-an unknown field, or an operator the field does not support, is dropped rather
-than passed through.
+an unknown field, an operator the field does not support, or a column the
+caller may not read is dropped rather than passed through.
+
+### Operators
+
+Each field type declares the operators that make sense for it, and only those
+are accepted:
+
+| Operator | Reads as | Typical field |
+| --- | --- | --- |
+| `eq`, `ne` | is, is not | any |
+| `lt`, `lte`, `gt`, `gte` | is before, is at most, is after, is at least | numbers, dates |
+| `between` | is between | numbers, dates — `?f.amount__between=1000,5000` |
+| `in`, `not_in` | is any of, is none of | choices — `?f.stage__in=won,lost` |
+| `icontains`, `startswith`, `endswith` | contains, starts with, ends with | text |
+| `is_null`, `not_null` | is empty, is not empty | any — the value is ignored |
+
+A bare `?f.stage=won` means `eq`, which is the common case.
+
+### The filter builder
+
+The **Filters** panel above a list builds these URLs. Each row is a column, an
+operator and a value, and all three menus depend on each other — "is before"
+belongs to a date and not to a checkbox — so the panel is assembled in the
+browser from a schema the page ships with it.
+
+It submits indexed triples (`fc.0.field`, `fc.0.op`, `fc.0.value`), because an
+HTML `<select>` cannot rewrite the `name` of the input beside it. The server
+rewrites those into the readable form above and redirects, so the encoding
+never reaches the address bar, the back button or a shared link. Without
+JavaScript the panel falls back to one box per column.
+
+### Value aliases
+
+A filter value written `@name` is resolved per request, against the caller and
+their timezone:
+
+| Alias | Means |
+| --- | --- |
+| `@me` | the caller's email, else their subject |
+| `@today`, `@yesterday`, `@tomorrow` | a calendar date **in the caller's zone** |
+| `@week_start`, `@week_end` | Monday and Sunday of this week |
+| `@month_start`, `@month_end`, `@year_start` | period boundaries |
+| `@now` | the current instant, UTC |
+
+So `?f.owner=@me&f.closed_on__between=@month_start,@month_end` is one link that
+means "my deals closing this month" — for whoever opens it, whenever they do.
+That is what makes a saved filter worth saving.
+
+Aliases resolve to Python values, not strings, and the field does the final
+coercion; `@today` therefore works on a date column and a datetime one alike.
+An alias nobody defines drops its condition rather than filtering on the
+literal text `"@yesteday"`, which would look like a working filter over an
+empty result. Write `@@` for a literal leading at-sign.
+
+`value_aliases` adds resource-specific ones, and shadows a built-in of the same
+name — useful when a resource's owner column holds a login name rather than the
+email `@me` resolves to by default.
 
 ## Menu placement
 
