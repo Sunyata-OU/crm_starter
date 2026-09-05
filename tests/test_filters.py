@@ -374,3 +374,18 @@ class TestTheToolbarOnEveryView:
     def test_the_panel_does_not_carry_the_stale_filters(self, admin):
         html = admin.get("/r/deals?f.stage=won").text
         assert 'name="f.stage"' not in html.split('class="chips"')[0].split("<noscript>")[0]
+
+    def test_a_detail_page_does_not_build_a_toolbar_it_never_renders(self, admin, monkeypatch):
+        # Building the menus resolves every filterable column's choices, which
+        # may be a callable that goes to a backend. A detail page renders no
+        # toolbar, so it must not pay for one.
+        import app.web.filters as filters
+
+        built = []
+        monkeypatch.setattr(
+            filters, "filter_schema", lambda resource, identity=None: built.append(resource.name)
+        )
+        admin.get("/r/contacts/1")
+        assert built == []
+        admin.get("/r/contacts")
+        assert built == ["contacts"], "the list view still needs them"

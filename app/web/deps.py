@@ -45,6 +45,10 @@ class AppState:
     login_limiter: Any
 
 
+#: View kinds whose template includes the search-and-filter toolbar.
+TOOLBAR_VIEWS = frozenset({"list", "board", "calendar", "chart", "pivot"})
+
+
 class View:
     """Per-request context and response helpers."""
 
@@ -240,12 +244,16 @@ class View:
         The toolbar above a list, a board, a calendar and a chart is the same
         toolbar, so what it needs is supplied here rather than by each handler
         -- one of them forgetting would silently drop the filter panel from
-        that view alone.
+        that view alone. Only those views, though: a detail page renders no
+        toolbar, and building its menus would mean resolving every filterable
+        column's choices -- which may be a callable that goes to a backend --
+        for markup nobody renders.
         """
-        from app.web.filters import active_filters, filter_schema
+        if kind in TOOLBAR_VIEWS:
+            from app.web.filters import active_filters, filter_schema
 
-        context.setdefault("chips", active_filters(dict(self.request.query_params), resource))
-        context.setdefault("filter_schema", filter_schema(resource, self.identity))
+            context.setdefault("chips", active_filters(dict(self.request.query_params), resource))
+            context.setdefault("filter_schema", filter_schema(resource, self.identity))
 
         template = self.templates.view_template(resource.name, kind)
         return self.render(
