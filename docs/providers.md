@@ -148,6 +148,35 @@ routing key.
 | `ReadOnly` | Wraps any provider to refuse writes. |
 | `AuditingProvider` | Wraps any provider to record every write, with before/after values. Applied automatically; not something a resource declares. |
 
+## REST connection authentication
+
+```yaml
+connections:
+  crm_api:
+    type: rest
+    options:
+      base_url: https://api.example.com
+      auth:
+        type: oauth2                       # bearer | header | basic | oauth2
+        token_url: https://issuer/oauth/token
+        client_id: ${API_CLIENT_ID}
+        client_secret: ${API_CLIENT_SECRET}
+        scope: read:things                 # optional
+        client_auth: basic                 # basic (default) | body
+        extra: {audience: https://api.example.com}   # Auth0 wants this
+        leeway: 30                         # renew this many seconds early
+```
+
+`bearer`, `header` and `basic` are a header computed once, when the connection
+opens. `oauth2` is client-credentials, and is the only one with a lifecycle: the
+token is fetched at first use, reused until shortly before it expires, and
+renewed once if the API rejects it with a 401. Concurrent requests against a
+cold connection share one token fetch rather than each opening their own.
+
+An unrecognised `type` is refused when the connection opens. Ignoring it would
+build an unauthenticated client, and the resulting 401 from the API reads like
+wrong credentials rather than a misspelled type name.
+
 ## Asynchronous writes
 
 If your backend accepts a write without confirming it, say so:

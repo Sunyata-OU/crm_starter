@@ -11,6 +11,8 @@ rows live in the response, how pages are requested, what a total is called.
 
 from __future__ import annotations
 
+import asyncio
+import time as time_module
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dc_field
@@ -21,7 +23,7 @@ from typing import Any, Literal
 import httpx
 
 from app.core.connections import ConnectionSpec, register_connection
-from app.core.errors import ConflictError, NotFound, ProviderError
+from app.core.errors import ConfigError, ConflictError, NotFound, ProviderError
 from app.core.query import ListQuery, Op, Page
 from app.core.registry import register_provider_factory
 from app.core.results import Ctx, Record, WriteResult
@@ -102,6 +104,132 @@ def dig(payload: Any, path: str) -> Any:
     return current
 
 
+class OAuth2ClientCredentials(httpx.Auth):
+    """Bearer tokens fetched on demand and renewed before they lapse.
+
+    The other auth types are a header computed once, when the connection opens.
+    This one cannot be: a token expires, so it has to be fetched at first use
+    and replaced on the way. That makes it the only auth type holding mutable
+    state, and the reason for the lock -- a burst of requests against a cold
+    connection must fetch one token between them, not one each.
+
+    ``leeway`` is what stops a token being presented in the instant it expires:
+    it is renewed early by that many seconds, which also absorbs a little clock
+    skew between this process and the issuer.
+    """
+
+    def __init__(
+        self,
+        *,
+        token_url: str,
+        client_id: str,
+        client_secret: str = "",
+        scope: str = "",
+        client_auth: str = "basic",
+        extra: Mapping[str, Any] | None = None,
+        timeout: float = 15.0,
+        leeway: float = 30.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        if not token_url or not client_id:
+            raise ConfigError("oauth2 auth needs a token_url and a client_id")
+        if client_auth not in ("basic", "body"):
+            raise ConfigError(
+                f"unknown client_auth {client_auth!r}; use 'basic' or 'body'"
+            )
+        self.token_url = token_url
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.scope = scope
+        self.client_auth = client_auth
+        self.extra = dict(extra or {})
+        self.timeout = timeout
+        self.leeway = leeway
+        self._transport = transport
+        self._token = ""
+        self._expires_at = 0.0
+        self._lock = asyncio.Lock()
+
+    # -- httpx integration --------------------------------------------------
+
+    async def async_auth_flow(self, request):
+        request.headers["Authorization"] = f"Bearer {await self._bearer()}"
+        response = yield request
+
+        if response.status_code == 401:
+            # The token was refused before it looked expired -- revoked, or the
+            # issuer disagrees about the clock. Fetch a fresh one and retry
+            # once. Only once: a genuinely unauthorised client would otherwise
+            # loop against the token endpoint.
+            await self._fetch(force=True)
+            request.headers["Authorization"] = f"Bearer {self._token}"
+            yield request
+
+    def sync_auth_flow(self, request):
+        raise ProviderError("this connection is async-only; use an async client")
+
+    # -- token lifecycle ----------------------------------------------------
+
+    @property
+    def _valid(self) -> bool:
+        return bool(self._token) and time_module.monotonic() < self._expires_at
+
+    async def _bearer(self) -> str:
+        if not self._valid:
+            await self._fetch()
+        return self._token
+
+    async def _fetch(self, *, force: bool = False) -> None:
+        async with self._lock:
+            # Another request may have renewed it while this one waited, which
+            # is the whole point of taking the lock before looking again.
+            if self._valid and not force:
+                return
+
+            data: dict[str, Any] = {"grant_type": "client_credentials", **self.extra}
+            if self.scope:
+                data["scope"] = self.scope
+            # httpx distinguishes "no auth" from "use the client's default",
+            # and only the latter is accepted per-request.
+            auth: Any = httpx.USE_CLIENT_DEFAULT
+            if self.client_auth == "basic":
+                auth = (self.client_id, self.client_secret)
+            else:
+                data["client_id"] = self.client_id
+                data["client_secret"] = self.client_secret
+
+            async with httpx.AsyncClient(
+                timeout=self.timeout, transport=self._transport
+            ) as client:
+                try:
+                    response = await client.post(self.token_url, data=data, auth=auth)
+                except httpx.HTTPError as exc:
+                    raise ProviderError(f"token request to {self.token_url!r} failed: {exc}") from exc
+
+            if response.status_code >= 400:
+                # The body carries the issuer's own reason -- invalid_scope,
+                # unauthorized_client -- which is the only useful thing to say.
+                raise ProviderError(
+                    f"token request to {self.token_url!r} returned "
+                    f"HTTP {response.status_code}: {response.text[:200]}"
+                )
+            try:
+                body = response.json()
+            except ValueError as exc:
+                raise ProviderError(f"token endpoint {self.token_url!r} did not return JSON") from exc
+
+            token = body.get("access_token")
+            if not token:
+                raise ProviderError(f"token endpoint {self.token_url!r} returned no access_token")
+            self._token = str(token)
+
+            try:
+                lifetime = float(body.get("expires_in", 3600))
+            except (TypeError, ValueError):
+                lifetime = 3600.0
+            self._expires_at = time_module.monotonic() + max(lifetime - self.leeway, 0.0)
+
+
 class RestConnection:
     """A shared HTTP client for one API."""
 
@@ -122,8 +250,13 @@ async def open_rest(spec: ConnectionSpec) -> RestConnection:
     base_url = str(spec.option("base_url", required=True)).rstrip("/")
     headers = dict(spec.option("headers") or {})
 
+    timeout = float(spec.option("timeout", 15.0))
     auth = spec.option("auth") or {}
+    flow: httpx.Auth | None = None
+
     match auth.get("type"):
+        case None | "" | "none":
+            pass
         case "bearer":
             headers["Authorization"] = f"Bearer {auth['token']}"
         case "header":
@@ -133,11 +266,32 @@ async def open_rest(spec: ConnectionSpec) -> RestConnection:
 
             raw = f"{auth['username']}:{auth['password']}".encode()
             headers["Authorization"] = "Basic " + base64.b64encode(raw).decode()
+        case "oauth2":
+            # The one arm that is not a header: see OAuth2ClientCredentials.
+            flow = OAuth2ClientCredentials(
+                token_url=auth.get("token_url", ""),
+                client_id=auth.get("client_id", ""),
+                client_secret=auth.get("client_secret", ""),
+                scope=auth.get("scope", ""),
+                client_auth=auth.get("client_auth", "basic"),
+                extra=auth.get("extra"),
+                timeout=timeout,
+                leeway=float(auth.get("leeway", 30.0)),
+            )
+        case unknown:
+            # Falling through would build an unauthenticated client and fail
+            # later as a 401 from the API, which reads like the credentials
+            # being wrong rather than the type name being misspelled.
+            raise ConfigError(
+                f"unknown auth type {unknown!r} for connection {spec.name!r}; "
+                "known types: bearer, header, basic, oauth2"
+            )
 
     client = httpx.AsyncClient(
         base_url=base_url,
         headers=headers,
-        timeout=float(spec.option("timeout", 15.0)),
+        auth=flow,
+        timeout=timeout,
         follow_redirects=True,
     )
     return RestConnection(client, base_url=base_url)

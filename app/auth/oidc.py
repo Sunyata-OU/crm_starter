@@ -14,7 +14,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import secrets
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -28,6 +28,30 @@ from app.core.results import Identity
 
 FLOW_COOKIE = "crm_oidc_flow"
 FLOW_MAX_AGE = 600
+
+
+def _claim(claims: Mapping[str, Any], path: str) -> Any:
+    """Read a claim addressed by a dotted path.
+
+    Not every issuer puts roles at the top level. Keycloak -- named in this
+    module's own docstring -- nests realm roles under ``realm_access.roles``
+    and client roles under ``resource_access.<client>.roles``, so a flat
+    ``claims.get(path)`` returns nothing and every user silently falls back to
+    ``default_roles``: an administrator signs in successfully and arrives with
+    the rights of a stranger, with no error anywhere to explain it.
+
+    A path with no dots is looked up as a plain key, so a claim whose name
+    genuinely contains a dot keeps working.
+    """
+    if path in claims:
+        return claims[path]
+
+    current: Any = claims
+    for segment in path.split("."):
+        if not isinstance(current, Mapping) or segment not in current:
+            return None
+        current = current[segment]
+    return current
 
 
 class OIDCAuth(BaseAuthProvider):
@@ -213,7 +237,7 @@ class OIDCAuth(BaseAuthProvider):
         only mapped values grant a role, which keeps an unexpected group in the
         directory from silently granting access here.
         """
-        raw = claims.get(self.roles_claim)
+        raw = _claim(claims, self.roles_claim)
         if raw is None:
             return self.default_roles
         values = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")

@@ -388,6 +388,56 @@ class TestOIDCConfiguration:
         assert auth.extract_roles({}) == frozenset({"user"})
 
 
+class TestOIDCNestedRolesClaims:
+    """Not every issuer puts roles at the top level.
+
+    Keycloak -- named in the provider's own docstring alongside Google, Entra
+    and Auth0 -- nests realm roles under ``realm_access.roles``. A flat lookup
+    found nothing there and fell through to ``default_roles``, so an
+    administrator signed in successfully and arrived with a stranger's rights,
+    with no error to explain it.
+    """
+
+    KEYCLOAK = {
+        "realm_access": {"roles": ["offline_access", "crm-admins"]},
+        "resource_access": {"crm": {"roles": ["crm-managers"]}},
+    }
+
+    def auth(self, **kw):
+        return OIDCAuth(issuer="https://issuer.test", client_id="x", secret_key=SECRET, **kw)
+
+    def test_a_nested_realm_role_is_found(self):
+        auth = self.auth(roles_claim="realm_access.roles", role_map={"crm-admins": "admin"})
+        assert auth.extract_roles(self.KEYCLOAK) == frozenset({"admin"})
+
+    def test_a_client_role_two_levels_down_is_found(self):
+        auth = self.auth(roles_claim="resource_access.crm.roles",
+                         role_map={"crm-managers": "manager"})
+        assert auth.extract_roles(self.KEYCLOAK) == frozenset({"manager"})
+
+    def test_without_a_map_nested_values_are_used_directly(self):
+        auth = self.auth(roles_claim="realm_access.roles")
+        assert auth.extract_roles(self.KEYCLOAK) == frozenset({"offline_access", "crm-admins"})
+
+    def test_a_top_level_claim_still_wins_over_a_dotted_reading(self):
+        # A claim whose name genuinely contains a dot must keep working.
+        auth = self.auth(roles_claim="realm_access.roles")
+        assert auth.extract_roles({"realm_access.roles": ["direct"]}) == frozenset({"direct"})
+
+    def test_a_path_through_a_missing_branch_falls_back(self):
+        auth = self.auth(roles_claim="realm_access.roles", default_roles=("user",))
+        assert auth.extract_roles({"sub": "x"}) == frozenset({"user"})
+
+    def test_a_path_through_a_non_mapping_falls_back(self):
+        # `realm_access` present but a string: walking into it must not raise.
+        auth = self.auth(roles_claim="realm_access.roles", default_roles=("user",))
+        assert auth.extract_roles({"realm_access": "nope"}) == frozenset({"user"})
+
+    def test_the_flat_case_is_unchanged(self):
+        auth = self.auth(roles_claim="roles")
+        assert auth.extract_roles({"roles": ["manager"]}) == frozenset({"manager"})
+
+
 class TestLoginFlow:
     def test_the_login_page_renders(self, client):
         assert "password" in client.get("/login").text.lower()

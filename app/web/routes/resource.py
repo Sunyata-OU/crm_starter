@@ -617,17 +617,33 @@ async def _load(view: View, resource: Resource, pk: str) -> Record:
     """Fetch a record, honouring the caller's row scope.
 
     A record outside the caller's scope reads as absent rather than forbidden,
-    which avoids confirming that a given key exists.
+    which avoids confirming that a given key exists. Both the missing case and
+    the out-of-scope one therefore end here the same way, which is the point.
+
+    Where there is a scope, it goes *into* the query rather than being checked
+    after the fetch. Fetching by key first assumes the key selects at most one
+    row, and a scope is exactly what makes that assumption worth doubting: on a
+    versioned table one key matches several rows, ``get`` returns whichever the
+    backend happens to order first -- often a superseded one -- and that row
+    then fails the scope test. The record listed on the previous screen 404s
+    when opened. Putting the scope in the query also saves a fetch-then-discard
+    round trip.
+
+    Without a scope there is nothing to fold in, so the plain keyed read stays:
+    it is what a provider can answer most cheaply, and several do so without
+    building a query at all.
     """
-    record = await resource.provider.get(pk, view.ctx)
+    if resource.policy.scope(view.identity) is None:
+        record = await resource.provider.get(pk, view.ctx)
+    else:
+        query = resource.build_query(
+            view.identity, filter=resource.pk_filter(pk), page_size=1, with_total=False
+        )
+        page = await resource.provider.list(query, view.ctx)
+        record = page.items[0] if page.items else None
+
     if record is None:
         raise NotFound(f"That {resource.label.lower()} does not exist.")
-    scope = resource.policy.scope(view.identity)
-    if scope is not None:
-        from app.providers.local import match
-
-        if not match(record, scope):
-            raise NotFound(f"That {resource.label.lower()} does not exist.")
     return record
 
 

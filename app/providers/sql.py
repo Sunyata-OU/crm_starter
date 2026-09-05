@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from datetime import date as date_type
 from datetime import datetime as datetime_type
 from datetime import time as time_type
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import (
@@ -48,6 +49,8 @@ from app.core.errors import (
 )
 from app.core.instrument import instrument_engine
 from app.core.query import (
+    SEQUENCE_OPS,
+    UNARY_OPS,
     Agg,
     AggSpec,
     Condition,
@@ -166,9 +169,19 @@ def _column(table: Table, name: str) -> ColumnElement[Any]:
 
 
 def build_condition(table: Table, cond: Condition) -> ColumnElement[bool]:
-    """Translate one condition into a SQL expression."""
+    """Translate one condition into a SQL expression.
+
+    Values are coerced to the column's own type first. A filter value is text
+    far more often than it looks: it arrives from a query string, from a CSV
+    export repeating a filter, and from the relation-label lookup, which
+    collects foreign keys with ``str(value)`` and asks for ``pk IN (...)``.
+    SQLite compares ``'335'`` to an integer column happily; PostgreSQL matches
+    nothing, so every relation on the page renders as a raw key instead of a
+    name -- and silently, because the label lookup swallows its exceptions by
+    design so a failed lookup cannot break the list it decorates.
+    """
     col = _column(table, cond.field)
-    value = cond.value
+    value = _coerce_value(col, cond.op, cond.value)
     match cond.op:
         case Op.EQ:
             return col.is_(None) if value is None else col == value
@@ -202,6 +215,63 @@ def build_condition(table: Table, cond: Condition) -> ColumnElement[bool]:
         case Op.ENDSWITH:
             return col.ilike(f"%{_escape_like(value)}", escape="\\")
     raise UnsupportedOperation(f"operator {cond.op!r} has no SQL translation")
+
+
+#: How a boolean arrives as text. Spelled out here rather than imported from
+#: the field layer, which providers deliberately do not depend on.
+_TRUE_TOKENS = frozenset({"1", "true", "yes", "on", "y", "t"})
+_FALSE_TOKENS = frozenset({"0", "false", "no", "off", "n", "f"})
+
+#: Operators whose value is a search pattern rather than a comparable. Coercing
+#: "12" to an int here would turn a substring search into an equality test.
+_PATTERN_OPS = frozenset({Op.CONTAINS, Op.ICONTAINS, Op.STARTSWITH, Op.ENDSWITH})
+
+
+def _coerce_value(column: ColumnElement[Any], op: Op, value: Any) -> Any:
+    """Convert a filter value to the column's type, elementwise where needed."""
+    if op in _PATTERN_OPS or op in UNARY_OPS:
+        return value
+    if op in SEQUENCE_OPS:
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return [_coerce_to_column(column, v) for v in value]
+        return value
+    return _coerce_to_column(column, value)
+
+
+def _coerce_to_column(column: ColumnElement[Any], value: Any) -> Any:
+    """Convert one text value to the type its column compares against.
+
+    Text is what reaches a query from a URL, a form or another provider's keys;
+    comparing it to a typed column returns nothing on strict backends such as
+    PostgreSQL. A value that will not convert is passed through untouched, so a
+    genuinely bad filter reaches the backend as itself rather than being
+    silently rewritten into one that matches something else.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        python_type = column.type.python_type
+    except (NotImplementedError, AttributeError):
+        return value
+
+    if python_type is bool:
+        lowered = value.strip().casefold()
+        if lowered in _TRUE_TOKENS:
+            return True
+        if lowered in _FALSE_TOKENS:
+            return False
+        return value
+    if python_type is int:
+        try:
+            return int(value)
+        except ValueError:
+            return value
+    if python_type is Decimal:
+        try:
+            return Decimal(value)
+        except InvalidOperation:
+            return value
+    return value
 
 
 def _escape_like(value: Any) -> str:
@@ -375,23 +445,8 @@ class SQLProvider(BaseProvider):
 
     @staticmethod
     def _coerce_pk(column: ColumnElement[Any], pk: Any) -> Any:
-        """Convert a path parameter to the key column's type.
-
-        Route parameters always arrive as text; comparing a string to an integer
-        column returns nothing on strict backends such as PostgreSQL.
-        """
-        if not isinstance(pk, str):
-            return pk
-        try:
-            python_type = column.type.python_type
-        except (NotImplementedError, AttributeError):
-            return pk
-        if python_type is int:
-            try:
-                return int(pk)
-            except ValueError:
-                return pk
-        return pk
+        """Convert a path parameter to the key column's type."""
+        return _coerce_to_column(column, pk)
 
     async def aggregate(self, spec: AggSpec, ctx: Ctx) -> Rows:
         table = await self.table()

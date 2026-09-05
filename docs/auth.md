@@ -124,6 +124,24 @@ than server memory, so the flow survives a restart and works across workers.
 With a `role_map` configured, only mapped claim values grant a role — an
 unexpected group appearing in the directory cannot silently become access here.
 
+**Nested claims.** Not every issuer puts roles at the top level, so
+`CRM_OIDC_ROLES_CLAIM` accepts a dotted path:
+
+| Issuer | Claim |
+| --- | --- |
+| Google, Auth0 | `groups` or `roles` — a plain key |
+| Entra | `roles` |
+| Keycloak, realm roles | `realm_access.roles` |
+| Keycloak, client roles | `resource_access.<client-id>.roles` |
+
+A name with no dots is looked up as a plain key, and a top-level claim whose
+name genuinely contains a dot still wins over the nested reading.
+
+Getting this wrong used to be invisible: a flat lookup against a nested claim
+found nothing and fell through to `default_roles`, so an administrator signed
+in successfully and arrived with the rights of a stranger. If SSO users are
+landing with only the default role, check this setting first.
+
 ### Gateway headers
 
 For deployments behind oauth2-proxy, Cloudflare Access or an authenticating
