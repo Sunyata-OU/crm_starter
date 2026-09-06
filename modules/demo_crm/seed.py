@@ -27,6 +27,24 @@ COMPANY_ROWS = [
     ("Noether Education",   None,                           "Education",          "smb", "Göttingen",  "Germany"),
 ]
 
+#: Where each company sits, and which company owns it. Coordinates are the city
+#: centres named in COMPANY_ROWS, to four decimal places -- enough to land in
+#: the right place on a map and honest about being approximate. The parent is a
+#: 1-based index into this same list, which is what makes the tree a self-join.
+COMPANY_GEOGRAPHY = [
+    # (latitude, longitude, parent index or None)
+    (51.5072,   -0.1276, None),   # Analytical Engines, London
+    (52.0406,   -0.7594, None),   # Bletchley Systems, Milton Keynes
+    (38.8816,  -77.0910, None),   # Hopper Naval Supply, Arlington
+    (52.2053,    0.1218, 1),      # Spanning Tree Ltd, Cambridge -- under Analytical
+    (29.7604,  -95.3698, 3),      # Apollo Guidance Co, Houston -- under Hopper
+    (42.3601,  -71.0589, None),   # Liskov Financial, Boston
+    (37.0299,  -76.3452, 3),      # Johnson Aerospace, Hampton -- under Hopper
+    (51.4545,   -2.5879, 1),      # Clarke Medical, Bristol -- under Analytical
+    (53.4808,   -2.2426, None),   # Turing Retail Group, Manchester
+    (None,        None,  9),      # Noether Education -- under Turing Retail, unplaced
+]
+
 CONTACT_ROWS = [
     ("Ada Lovelace",     "ada@analytical.example",   "+44 20 7946 0001", "Chief Analyst",       1, "active"),
     ("Charles Babbage",  "charles@analytical.example", None,             "Founder",             1, "active"),
@@ -54,6 +72,9 @@ async def seed(ctx: SeedContext) -> dict[str, int]:
                 "size": size, "city": city, "country": country,
                 "owner": ctx.owner(i),
                 "notes": None if i % 3 else f"Key account since {2019 + i % 5}.",
+                "parent_id": COMPANY_GEOGRAPHY[i][2],
+                "latitude": COMPANY_GEOGRAPHY[i][0],
+                "longitude": COMPANY_GEOGRAPHY[i][1],
             }
             for i, (name, website, industry, size, city, country) in enumerate(COMPANY_ROWS)
         ],

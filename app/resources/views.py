@@ -485,3 +485,283 @@ class SearchSpec:
         self.value_aliases = dict(value_aliases or {})
         self.group_by = tuple(group_by)
         self.placeholder = placeholder
+
+
+# -- tree ------------------------------------------------------------------
+
+
+class TreeView(View):
+    """A list whose rows expand to reveal their children, recursively.
+
+    Two shapes, one spec. Left alone, ``parent_field`` names this resource's
+    own parent column and the tree is self-referential: accounts under
+    accounts, categories under categories. Naming ``child_resource`` instead
+    hangs a *different* resource off each row -- contacts under companies --
+    with ``parent_field`` naming the column over there that points back here.
+
+    Children are fetched a level at a time, when a row is opened, rather than
+    walked eagerly on the way in. A deep hierarchy would otherwise cost a query
+    per node for a page that shows the top level and nothing else.
+    """
+
+    kind = "tree"
+    aliases = ("hierarchy",)
+
+    def __init__(
+        self,
+        columns: Sequence[Column | str] = (),
+        *,
+        parent_field: str,
+        name: str = "",
+        label: str = "Tree",
+        icon: str = "tree",
+        #: Resource hung under each row. Empty means this one -- a self-join.
+        child_resource: str = "",
+        default_sort: Sequence[Sort | str] = (),
+        page_size: int = 50,
+        #: How far a branch may be opened. Guards against a cycle in the data,
+        #: which no schema here can rule out.
+        max_depth: int = 8,
+        child_limit: int = 100,
+        row_link: bool = True,
+        empty_message: str = "Nothing here yet.",
+    ) -> None:
+        super().__init__(name=name, label=label, icon=icon)
+        self.columns = [Column.coerce(c) for c in columns]
+        self.parent_field = parent_field
+        self.child_resource = child_resource
+        self.default_sort = tuple(
+            s if isinstance(s, Sort) else Sort.parse(s) for s in default_sort
+        )
+        self.page_size = page_size
+        self.max_depth = max_depth
+        self.child_limit = child_limit
+        self.row_link = row_link
+        self.empty_message = empty_message
+
+    @property
+    def self_referential(self) -> bool:
+        return not self.child_resource
+
+    @property
+    def field_names(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys([*(c.field for c in self.columns), self.parent_field]))
+
+
+# -- gantt -----------------------------------------------------------------
+
+
+class GanttView(View):
+    """Records drawn as bars along a time axis.
+
+    The window is a fixed number of columns wide and the bars are positioned as
+    percentages of it, so the whole thing is server-rendered: no measuring the
+    viewport, and the page prints and screenshots as what it is.
+
+    ``end_field`` is required rather than optional. A bar needs two dates, and
+    inventing the second one -- "a day long", "until today" -- would draw a
+    schedule the data does not claim.
+    """
+
+    kind = "gantt"
+    aliases = ("timeline_chart",)
+
+    def __init__(
+        self,
+        *,
+        start_field: str,
+        end_field: str,
+        title_field: str = "",
+        name: str = "",
+        label: str = "Gantt",
+        icon: str = "gantt",
+        #: Rows are gathered into bands by this field, as a board is by status.
+        group_by: str = "",
+        color_field: str = "",
+        #: Numeric 0-100 field drawn as a fill inside each bar.
+        progress_field: str = "",
+        default_scale: Literal["day", "week", "month"] = "week",
+        #: Columns drawn across the window, in units of the scale.
+        span: int = 12,
+        limit: int = 200,
+        default_sort: Sequence[Sort | str] = (),
+    ) -> None:
+        super().__init__(name=name, label=label, icon=icon)
+        self.start_field = start_field
+        self.end_field = end_field
+        self.title_field = title_field
+        self.group_by = group_by
+        self.color_field = color_field
+        self.progress_field = progress_field
+        self.default_scale = default_scale
+        self.span = span
+        self.limit = limit
+        self.default_sort = tuple(
+            s if isinstance(s, Sort) else Sort.parse(s) for s in default_sort
+        )
+
+    @property
+    def field_names(self) -> tuple[str, ...]:
+        candidates = (
+            self.start_field, self.end_field, self.title_field,
+            self.group_by, self.color_field, self.progress_field,
+        )
+        return tuple(dict.fromkeys(f for f in candidates if f))
+
+    @property
+    def group_fields(self) -> tuple[str, ...]:
+        """Fields whose choice labels the bands and bars are named by."""
+        return tuple(f for f in (self.group_by, self.color_field) if f)
+
+
+# -- map -------------------------------------------------------------------
+
+
+class MapView(View):
+    """Records as pins on a slippy map, placed by a latitude/longitude pair.
+
+    Only records with both coordinates are asked for; the rest are counted and
+    reported rather than silently dropped, since "not on the map" and "not in
+    the data" are different problems and only one of them is the user's.
+    """
+
+    kind = "map"
+
+    def __init__(
+        self,
+        *,
+        lat_field: str,
+        lon_field: str,
+        title_field: str = "",
+        name: str = "",
+        label: str = "Map",
+        icon: str = "map",
+        subtitle_field: str = "",
+        #: Field whose choice colours decide the pin colours.
+        color_field: str = "",
+        zoom: int = 4,
+        limit: int = 500,
+    ) -> None:
+        super().__init__(name=name, label=label, icon=icon)
+        self.lat_field = lat_field
+        self.lon_field = lon_field
+        self.title_field = title_field
+        self.subtitle_field = subtitle_field
+        self.color_field = color_field
+        self.zoom = zoom
+        self.limit = limit
+
+    @property
+    def field_names(self) -> tuple[str, ...]:
+        candidates = (
+            self.lat_field, self.lon_field,
+            self.title_field, self.subtitle_field, self.color_field,
+        )
+        return tuple(dict.fromkeys(f for f in candidates if f))
+
+    @property
+    def group_fields(self) -> tuple[str, ...]:
+        return (self.color_field,) if self.color_field else ()
+
+
+# -- activity --------------------------------------------------------------
+
+
+class ActivityView(View):
+    """Who owes what, by when: records crossed by owner and kind of work.
+
+    A cell holds the records sharing a row and a column, coloured by the
+    soonest one still outstanding -- overdue, due today, or later. The states
+    are computed from ``due_field`` against the request's clock rather than
+    stored, so nothing has to be swept nightly to stay honest.
+    """
+
+    kind = "activity"
+
+    def __init__(
+        self,
+        *,
+        row_field: str,
+        activity_field: str,
+        due_field: str,
+        name: str = "",
+        label: str = "Activity",
+        icon: str = "activity",
+        title_field: str = "",
+        #: Records whose work is finished, and so are not owed by anyone.
+        done_filter: Any = None,
+        limit: int = 500,
+        default_sort: Sequence[Sort | str] = (),
+    ) -> None:
+        super().__init__(name=name, label=label, icon=icon)
+        self.row_field = row_field
+        self.activity_field = activity_field
+        self.due_field = due_field
+        self.title_field = title_field
+        self.done_filter = done_filter
+        self.limit = limit
+        self.default_sort = tuple(
+            s if isinstance(s, Sort) else Sort.parse(s) for s in default_sort
+        )
+
+    @property
+    def field_names(self) -> tuple[str, ...]:
+        candidates = (self.row_field, self.activity_field, self.due_field, self.title_field)
+        return tuple(dict.fromkeys(f for f in candidates if f))
+
+    @property
+    def group_fields(self) -> tuple[str, ...]:
+        return (self.row_field, self.activity_field)
+
+
+# -- dashboard -------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class Panel:
+    """One view embedded in a dashboard.
+
+    ``resource`` empty means the dashboard's own resource, so a resource can
+    lay out its own charts without repeating its name.
+    """
+
+    view: str
+    resource: str = ""
+    title: str = ""
+    #: Grid columns this panel occupies.
+    span: int = 1
+    height: str = ""
+
+    def url(self, default_resource: str) -> str:
+        return f"/r/{self.resource or default_resource}?view={self.view}&panel=1"
+
+
+class DashboardView(View):
+    """Several views on one page, each loaded on its own.
+
+    Panels are fetched by the browser rather than rendered inline, which is
+    what keeps a dashboard from being as slow as its slowest panel: the page
+    arrives immediately and each panel fills in when its query returns. It also
+    means a panel is exactly the view it names -- the same handler, the same
+    template, the same permission check -- rather than a second implementation
+    of it that can drift.
+    """
+
+    kind = "dashboard"
+
+    def __init__(
+        self,
+        panels: Sequence[Panel] = (),
+        *,
+        name: str = "",
+        label: str = "Dashboard",
+        icon: str = "dashboard",
+        columns: int = 2,
+    ) -> None:
+        super().__init__(name=name, label=label, icon=icon)
+        self.panels = list(panels)
+        self.columns = columns
+
+    def add_panels(self, *panels: Panel) -> Self:
+        self.panels.extend(panels)
+        return self

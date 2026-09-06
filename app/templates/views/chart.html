@@ -1,9 +1,9 @@
-{% extends "base.html" %}
+{% extends layout|default("base.html") %}
 {% block title %}{{ resource.label_plural }}{% endblock %}
 {% block heading %}{{ resource.label_plural }} · {{ spec.label }}{% endblock %}
 
 {% block content %}
-  {% include "views/_toolbar.html" %}
+  {% if not panel %}{% include "views/_toolbar.html" %}{% endif %}
 
   {#
     Drawn with CSS-sized bars rather than a charting library: no dependency, it

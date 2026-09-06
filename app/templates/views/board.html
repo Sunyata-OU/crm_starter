@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends layout|default("base.html") %}
 {% import "macros/fields.html" as f with context %}
 {% block title %}{{ resource.label_plural }}{% endblock %}
 {% block heading %}{{ resource.label_plural }}{% endblock %}
@@ -10,7 +10,7 @@
 {% endblock %}
 
 {% block content %}
-  {% include "views/_toolbar.html" %}
+  {% if not panel %}{% include "views/_toolbar.html" %}{% endif %}
 
   {#
     Dragging a card writes the new group value straight through the provider.

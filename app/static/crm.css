@@ -787,3 +787,112 @@ body.htmx-request::after {
 
 .tz-hint { font-size: .72rem; margin-left: .4rem; white-space: nowrap; }
 .field-datetime .input { display: inline-block; width: auto; min-width: 15rem; }
+
+/* -- tree ----------------------------------------------------------------- */
+
+.data-table.tree .col-expand { width: 2rem; padding-right: 0; }
+.tree-toggle {
+  background: none; border: 0; cursor: pointer; padding: .15rem .35rem;
+  color: var(--text-muted); font-size: .85rem; line-height: 1; border-radius: var(--radius-sm);
+}
+.tree-toggle:hover { background: var(--surface-alt); color: var(--text); }
+.tree-indent { display: inline-block; }
+.tree-count {
+  margin-left: .45rem; font-size: .7rem; color: var(--text-muted);
+  background: var(--surface-alt); border: 1px solid var(--border);
+  border-radius: 999px; padding: 0 .4rem;
+}
+.tree-note { margin: 0 0 .75rem; }
+.tree-too-deep td { background: var(--warning-soft); }
+
+/* -- gantt ---------------------------------------------------------------- */
+
+.gantt { min-width: 44rem; }
+.gantt-head, .gantt-row, .gantt-band { display: flex; align-items: stretch; }
+.gantt-label-col {
+  flex: 0 0 14rem; min-width: 0; padding: .35rem .6rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border-right: 1px solid var(--border);
+}
+.gantt-track { position: relative; flex: 1 1 auto; min-height: 1.9rem; }
+.gantt-head { border-bottom: 1px solid var(--border); font-size: .75rem; color: var(--text-muted); }
+.gantt-head .gantt-track { display: flex; }
+.gantt-col-label { flex: 1 1 0; padding: .35rem .4rem; border-left: 1px solid var(--border); }
+.gantt-band { background: var(--surface-alt); font-weight: 600; font-size: .8rem; }
+.gantt-band-count { position: absolute; right: .5rem; top: .35rem; color: var(--text-muted); font-weight: 400; }
+.gantt-row { border-top: 1px solid var(--border); }
+.gantt-row:hover { background: var(--surface-alt); }
+.gantt-grid { position: absolute; inset: 0; display: flex; pointer-events: none; }
+.gantt-grid > span { flex: 1 1 0; border-left: 1px solid var(--border); }
+.gantt-today { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--danger); opacity: .55; }
+.gantt-bar {
+  position: absolute; top: .3rem; height: 1.3rem; display: block;
+  background: var(--accent-soft); border: 1px solid var(--accent);
+  border-radius: var(--radius-sm); overflow: hidden; text-decoration: none;
+  color: var(--text); font-size: .75rem; line-height: 1.25rem;
+}
+.gantt-bar:hover { filter: brightness(.97); }
+.gantt-bar.clipped-start { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-style: dashed; }
+.gantt-bar.clipped-end { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right-style: dashed; }
+.gantt-progress { position: absolute; inset: 0 auto 0 0; background: var(--accent); opacity: .22; }
+.gantt-bar-text { position: relative; padding: 0 .4rem; white-space: nowrap; }
+.gantt-scales { display: inline-flex; gap: .25rem; margin-left: auto; }
+.gantt-scales .active { background: var(--accent-soft); border-color: var(--accent); }
+.gantt-empty { padding: 1rem; }
+
+/* -- map ------------------------------------------------------------------ */
+
+.map { height: 28rem; border: 1px solid var(--border); border-radius: var(--radius); }
+.map-footnotes { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-top: .6rem; }
+.map-legend { display: flex; gap: .8rem; list-style: none; margin: 0; padding: 0; font-size: .78rem; }
+.map-legend li { display: flex; align-items: center; gap: .3rem; }
+.map-list { margin-top: .8rem; }
+.map-list ul { margin: .5rem 0 0; padding-left: 1rem; }
+.map-list li { margin: .2rem 0; display: flex; gap: .6rem; flex-wrap: wrap; }
+.map-list .coords { font-family: var(--mono); font-size: .72rem; }
+.dot { display: inline-block; width: .7rem; height: .7rem; border-radius: 50%; background: var(--border-strong); }
+
+/* -- activity ------------------------------------------------------------- */
+
+.data-table.activity th[scope="row"] { white-space: nowrap; }
+.activity-cell { vertical-align: middle; }
+.activity-chip {
+  display: inline-flex; flex-direction: column; align-items: center; gap: .1rem;
+  min-width: 2.4rem; padding: .2rem .45rem; border-radius: var(--radius-sm);
+  text-decoration: none; font-weight: 600; color: var(--text);
+}
+.activity-chip:hover { outline: 1px solid var(--border-strong); }
+.activity-due { font-size: .68rem; font-weight: 400; color: var(--text-muted); }
+.state-overdue, .activity-cell.state-overdue .activity-chip { background: var(--danger-soft); color: var(--danger); }
+.state-today,   .activity-cell.state-today .activity-chip   { background: var(--warning-soft); color: var(--warning); }
+.state-planned, .activity-cell.state-planned .activity-chip { background: var(--surface-alt); }
+.activity-key { display: flex; align-items: center; gap: .4rem; margin-top: .6rem; font-size: .75rem; }
+.activity-key .dot { margin-left: .6rem; }
+
+/* -- dashboard ------------------------------------------------------------ */
+
+.dashboard {
+  display: grid; gap: 1rem;
+  grid-template-columns: repeat(var(--dash-columns, 2), minmax(0, 1fr));
+}
+.dash-panel {
+  grid-column: span min(var(--dash-span, 1), var(--dash-columns, 2));
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
+}
+.dash-panel-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: .5rem; padding: .6rem .8rem; border-bottom: 1px solid var(--border);
+}
+.dash-panel-head h2 { margin: 0; font-size: .9rem; }
+.dash-panel-body { padding: .8rem; overflow: auto; }
+/* A panel is a whole view rendered small: its own page furniture is already
+   suppressed, and what remains should not shout over the panel beside it. */
+.dash-panel-body .data-table { font-size: .82rem; }
+.dash-panel-body h1, .dash-panel-body .toolbar { display: none; }
+
+@media (max-width: 720px) {
+  .dashboard { grid-template-columns: 1fr; }
+  .dash-panel { grid-column: span 1; }
+  .gantt-label-col { flex-basis: 8rem; }
+}

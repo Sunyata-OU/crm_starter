@@ -4,7 +4,8 @@ A scaffold for building internal CRM-style applications with **FastAPI, Jinja
 and HTMX**.
 
 You declare a resource and its fields. You get list, form, detail, board,
-calendar, chart and pivot views, filters, search, sorting, pagination,
+calendar, chart, pivot, tree, gantt, map, activity and dashboard views,
+filters, search, sorting, pagination,
 inline-editable cells, CSV export and a JSON API — without writing a route, a
 query or a template.
 
@@ -52,8 +53,8 @@ CRM_MODULES=demo_crm,demo_sales uv run crm dev
 | --- | --- | --- |
 | `core_identity` | always | users, API tokens |
 | `core_access` | always | roles, permissions, audit log, notifications |
-| `demo_crm` | opt-in | companies, contacts |
-| `demo_sales` | opt-in | deals, activities — board, calendar, charts, custom actions |
+| `demo_crm` | opt-in | companies, contacts — group tree, office map |
+| `demo_sales` | opt-in | deals, activities — board, calendar, charts, gantt, activity grid, dashboard, custom actions |
 | `demo_remote` | opt-in | a REST-backed resource and a queued write |
 | `demo_archive` | opt-in | one resource served from two databases at once |
 
@@ -74,7 +75,7 @@ row-level scoping in action once the demo is on:
 
 | | |
 | --- | --- |
-| **Views** | list, form, detail, **board/kanban**, calendar, chart, pivot |
+| **Views** | list, form, detail, **board/kanban**, calendar, chart, pivot, **tree**, **gantt**, **map**, **activity**, **dashboard** |
 | **Query** | filters in the URL, free-text search, multi-key sort, pagination |
 | **Editing** | full forms, modal forms, double-click inline cells, bulk actions |
 | **Fields** | 27 types, each with coercion, validation, display and input rendering |

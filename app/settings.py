@@ -172,6 +172,14 @@ class Settings(BaseSettings):
     date_format: str = "%d %b %Y"
     datetime_format: str = "%d %b %Y, %H:%M"
     currency_symbol: str = "$"
+    #: Where a map view fetches its tiles. Public OpenStreetMap by default,
+    #: which is fine for a handful of users and against their usage policy for
+    #: more than that -- point it at your own tile server, or at a commercial
+    #: one, before a deployment of any size. Emptying it turns the map into a
+    #: plain list of located records, which is also what an air-gapped install
+    #: wants: the tiles are the only thing on any page that leaves the network.
+    map_tile_url: str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    map_attribution: str = "© OpenStreetMap contributors"
 
     @field_validator(
         "auth_providers", "modules", "dev_auth_roles", "proxy_trusted_ips",

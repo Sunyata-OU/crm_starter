@@ -1,0 +1,94 @@
+{% extends layout|default("base.html") %}
+{% block title %}{{ resource.label_plural }}{% endblock %}
+{% block heading %}{{ resource.label_plural }} · {{ spec.label }}{% endblock %}
+
+{% block content %}
+  {% if not panel %}{% include "views/_toolbar.html" %}{% endif %}
+
+  {% set title_field = resource.get_field(spec.title_field) if spec.title_field else none %}
+
+  <div class="calendar-nav">
+    <a class="btn btn-sm" href="{{ request|querystring(at=prev_from) }}">← Earlier</a>
+    <h2 class="calendar-title">
+      {{ window_start.strftime('%d %b %Y') }} – {{ window_end.strftime('%d %b %Y') }}
+    </h2>
+    <a class="btn btn-sm" href="{{ request|querystring(at=next_from) }}">Later →</a>
+    <a class="btn btn-sm" href="{{ request|querystring(at=None) }}">Today</a>
+    <div class="gantt-scales" role="group" aria-label="Scale">
+      {% for option in ['day', 'week', 'month'] %}
+        <a class="btn btn-sm {{ 'active' if option == scale }}"
+           href="{{ request|querystring(scale=option, at=None) }}">{{ option|capitalize }}</a>
+      {% endfor %}
+    </div>
+  </div>
+
+  {#
+    Bars are positioned as percentages of the window, computed on the server.
+    Nothing here measures the page, so the chart is correct in the first frame
+    and prints as what it is.
+  #}
+  <div class="matrix-wrap">
+    <div class="gantt" style="--gantt-columns: {{ columns|length }}">
+      <div class="gantt-head">
+        <div class="gantt-label-col"></div>
+        <div class="gantt-track">
+          {% for column in columns %}
+            <div class="gantt-col-label">{{ column.label }}</div>
+          {% endfor %}
+        </div>
+      </div>
+
+      {% for group in groups %}
+        {% if spec.group_by %}
+          <div class="gantt-band">
+            <div class="gantt-label-col gantt-band-label">{{ group.label }}</div>
+            <div class="gantt-track"><span class="gantt-band-count">{{ group.bars|length }}</span></div>
+          </div>
+        {% endif %}
+        {% for bar in group.bars %}
+          {% set record = bar.record %}
+          <div class="gantt-row">
+            <div class="gantt-label-col">
+              <a class="record-link" href="/r/{{ resource.name }}/{{ record.pk }}">
+                {% if title_field %}
+                  {{ title_field.to_display(title_field.extract(record)) }}
+                {% else %}
+                  {{ resource.display_value(record) }}
+                {% endif %}
+              </a>
+            </div>
+            <div class="gantt-track">
+              {# The column rules sit behind the bar as a flex row, so they land
+                 on the same boundaries as the header whatever the width is. #}
+              <div class="gantt-grid" aria-hidden="true">
+                {% for column in columns %}<span></span>{% endfor %}
+              </div>
+              {% if today_offset is not none %}
+                <div class="gantt-today" style="left: {{ today_offset }}%"
+                     title="Today, {{ today }}" aria-hidden="true"></div>
+              {% endif %}
+              <a class="gantt-bar {{ 'clipped-start' if bar.clipped_start }} {{ 'clipped-end' if bar.clipped_end }}"
+                 href="/r/{{ resource.name }}/{{ record.pk }}"
+                 style="left: {{ bar.left }}%; width: {{ bar.width }}%"
+                 title="{{ bar.start }} → {{ bar.end }}">
+                {% if bar.progress is not none %}
+                  <span class="gantt-progress" style="width: {{ bar.progress }}%"></span>
+                {% endif %}
+                <span class="gantt-bar-text">
+                  {% if title_field %}
+                    {{ title_field.to_display(title_field.extract(record)) }}
+                  {% else %}
+                    {{ resource.display_value(record) }}
+                  {% endif %}
+                </span>
+              </a>
+            </div>
+          </div>
+        {% endfor %}
+      {% endfor %}
+      {% if not bars %}
+        <p class="muted gantt-empty">Nothing scheduled in this window.</p>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

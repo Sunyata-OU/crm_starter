@@ -1,0 +1,71 @@
+{% extends layout|default("base.html") %}
+{% block title %}{{ resource.label_plural }}{% endblock %}
+{% block heading %}{{ resource.label_plural }} · {{ spec.label }}{% endblock %}
+
+{% block content %}
+  {% if not panel %}{% include "views/_toolbar.html" %}{% endif %}
+
+  {#
+    Markers travel as JSON in a data island rather than as generated script, so
+    nothing on this page is executable text built from record values -- a title
+    containing a quote or a </script> is data here, not a hole.
+  #}
+  <script type="application/json" id="map-markers">{{ markers|tojson }}</script>
+
+  {% if tile_url %}
+    <div class="map" id="map"
+         data-tile-url="{{ tile_url }}"
+         data-attribution="{{ attribution }}"
+         data-zoom="{{ spec.zoom }}"
+         role="application"
+         aria-label="Map of {{ resource.label_plural|lower }}">
+    </div>
+  {% else %}
+    {# No tile server configured: the coordinates are still worth showing, and
+       an air-gapped install gets a usable page instead of a grey rectangle. #}
+    <p class="muted">No map tiles are configured (<code>map_tile_url</code>).</p>
+  {% endif %}
+
+  <div class="map-footnotes">
+    <p class="muted">
+      {{ placed }} {{ resource.label_plural|lower if placed != 1 else resource.label|lower }} placed
+      {% if unplaced %}
+        · <a class="link" href="{{ request|querystring(view='list', **{'f.' ~ spec.lat_field ~ '__is_null': '1'}) }}">
+            {{ unplaced }} without coordinates
+          </a>
+      {% endif %}
+    </p>
+    {% if legend %}
+      <ul class="map-legend">
+        {% for label, colour in legend %}
+          <li><span class="dot pill-{{ colour or 'default' }}"></span>{{ label }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </div>
+
+  {# Always rendered: it is the accessible view of the same data, and the only
+     one when scripting is off. #}
+  <details class="map-list" {% if not tile_url %}open{% endif %}>
+    <summary>Records on this map</summary>
+    <ul>
+      {% for marker in markers %}
+        <li>
+          <a class="record-link" href="{{ marker.url }}">{{ marker.title }}</a>
+          {% if marker.subtitle %}<span class="muted">{{ marker.subtitle }}</span>{% endif %}
+          <span class="muted coords">{{ '%.4f, %.4f'|format(marker.lat, marker.lon) }}</span>
+        </li>
+      {% else %}
+        <li class="muted">Nothing to place.</li>
+      {% endfor %}
+    </ul>
+  </details>
+{% endblock %}
+
+{% block scripts %}
+  {% if tile_url %}
+    <link rel="stylesheet" href="/static/leaflet.css">
+    <script src="/static/leaflet.js"></script>
+    <script src="/static/crm-map.js"></script>
+  {% endif %}
+{% endblock %}

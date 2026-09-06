@@ -138,6 +138,8 @@ Covered in [`scaling.md`](scaling.md).
 | `CRM_DATE_FORMAT` | `%d %b %Y` | |
 | `CRM_DATETIME_FORMAT` | `%d %b %Y, %H:%M` | |
 | `CRM_CURRENCY_SYMBOL` | `$` | |
+| `CRM_MAP_TILE_URL` | OpenStreetMap | Tiles for map views. The public OSM server is fine while you are building and against its usage policy for a deployment of any size -- point it at your own or a commercial one. Empty turns a map into a list of located records, which is also what an air-gapped install wants: tiles are the only thing on any page that leaves the network. |
+| `CRM_MAP_ATTRIBUTION` | `© OpenStreetMap contributors` | Credit shown on the map. Change it with the tile server. |
 
 ## Production checks
 

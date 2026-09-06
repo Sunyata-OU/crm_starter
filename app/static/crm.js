@@ -64,6 +64,44 @@
     if (cancel) cancel.click();
   });
 
+  /* -- tree branches -------------------------------------------------------
+     The first click on a row's toggle is HTMX's: it fetches that branch and
+     inserts it after the row. Every click after that is this function's, and
+     only hides or shows rows already present -- so opening a branch twice
+     costs one query, not two.
+
+     Rows are siblings in one table, not nested elements, because a table needs
+     them to be. Depth therefore lives in `data-depth` and "my descendants"
+     means "the following rows deeper than me, up to the next one that is not".
+  */
+
+  crm.toggleBranch = function (button) {
+    const row = button.closest("tr");
+    if (!row) return;
+    const open = button.getAttribute("aria-expanded") !== "true";
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+    button.textContent = open ? "\u25be" : "\u25b8";
+
+    const base = Number(row.dataset.depth || 0);
+    // While re-opening, a descendant that was left collapsed keeps its own
+    // subtree hidden: expanding a parent must not expand everything under it.
+    let collapsedAt = null;
+
+    for (let next = row.nextElementSibling; next; next = next.nextElementSibling) {
+      const depth = Number(next.dataset.depth || 0);
+      if (!next.classList.contains("tree-row") || depth <= base) break;
+      if (!open) {
+        next.hidden = true;
+        continue;
+      }
+      if (collapsedAt !== null && depth > collapsedAt) continue;
+      collapsedAt = null;
+      next.hidden = false;
+      const toggle = next.querySelector(".tree-toggle");
+      if (toggle && toggle.getAttribute("aria-expanded") !== "true") collapsedAt = depth;
+    }
+  };
+
   /* -- bulk selection ----------------------------------------------------- */
 
   crm.toggleAll = function (master) {

@@ -244,7 +244,7 @@ yours are not ours.
 | `core_identity` | always | users, API tokens |
 | `core_access` | always | roles, permissions, audit log, notifications |
 | `demo_crm` | opt-in | companies, contacts — the worked example |
-| `demo_sales` | opt-in | deals, activities; board, calendar, charts, actions |
+| `demo_sales` | opt-in | deals, activities; board, calendar, charts, gantt, activity grid, dashboard, actions |
 | `demo_remote` | opt-in | a REST-backed resource and a queued write |
 
 `CRM_MODULES` names the *optional* modules to switch on. It is additive: the

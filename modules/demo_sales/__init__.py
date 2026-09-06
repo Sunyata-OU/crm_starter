@@ -36,14 +36,18 @@ from app.resources.policy import OwnerPolicy
 from app.resources.rbac import DbPolicy
 from app.resources.resource import Resource
 from app.resources.views import (
+    ActivityView,
     BoardView,
     CalendarView,
     Card,
     ChartView,
     Column,
+    DashboardView,
     DetailView,
     FormView,
+    GanttView,
     ListView,
+    Panel,
     PivotView,
     QuickFilter,
     SearchSpec,
@@ -333,6 +337,30 @@ def _deals() -> Resource:
                 measures=(Measure(Agg.SUM, "amount", alias="value"),),
                 label="Owner × stage",
             ),
+            # From the day a deal was created to the day it is expected to
+            # close, banded by stage. Both dates are already on the record, so
+            # the schedule is a way of reading the pipeline, not a second
+            # place to maintain it.
+            GanttView(
+                start_field="created_at",
+                end_field="expected_close",
+                title_field="name",
+                group_by="stage",
+                progress_field="probability",
+                label="Schedule",
+                default_scale="month",
+            ),
+            DashboardView(
+                panels=[
+                    Panel(view="chart", title="Value by stage", span=1),
+                    Panel(view="pivot", title="Owner × stage", span=1),
+                    Panel(view="board", title="Pipeline", span=2, height="26rem"),
+                    Panel(view="activity", resource="activities",
+                          title="Outstanding work", span=2),
+                ],
+                label="Overview",
+                columns=2,
+            ),
             FormView([
                 Section("Deal", ["name", "company_id", "contact_id"], columns=2),
                 Section("Commercials", ["amount", "stage", "probability", "expected_close"], columns=2),
@@ -436,6 +464,17 @@ def _activities() -> Resource:
                 measure=Measure(Agg.COUNT, alias="value"),
                 label="By type",
                 chart="bar",
+            ),
+            # Who owes what, by when. Completed work is excluded by the spec
+            # rather than by a filter the user has to remember to apply: an
+            # activity that is done is not outstanding, on anybody's grid.
+            ActivityView(
+                row_field="owner",
+                activity_field="kind",
+                due_field="due_on",
+                title_field="subject",
+                done_filter=Condition("done", Op.EQ, False),
+                label="Workload",
             ),
             FormView([
                 Section("Activity", ["subject", "kind", "due_on", "minutes"], columns=2),

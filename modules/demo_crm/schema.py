@@ -9,7 +9,7 @@ of deployment rather than a naming convention.
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Table, Text
+from sqlalchemy import Boolean, Column, Float, ForeignKey, Integer, String, Table, Text
 
 from app.schema import Instant, metadata, timestamps
 
@@ -24,6 +24,14 @@ companies = Table(
     Column("country", String(80)),
     Column("owner", String(60), index=True),
     Column("notes", Text),
+    # Self-referential: a subsidiary points at its parent company. Nullable,
+    # because most companies are nobody's subsidiary, and that is what makes a
+    # row a root of the tree rather than a special case in the query.
+    Column("parent_id", Integer, ForeignKey("companies.id"), index=True),
+    # Where the office is. Two nullable columns rather than one point type:
+    # every backend has floats, and the map view only ever reads them back.
+    Column("latitude", Float),
+    Column("longitude", Float),
     *timestamps(),
 )
 

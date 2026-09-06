@@ -1,0 +1,44 @@
+{% extends layout|default("base.html") %}
+{% block title %}{{ spec.label }}{% endblock %}
+{% block heading %}{{ spec.label }}{% endblock %}
+
+{% block content %}
+  {#
+    The view switcher, without the rest of the toolbar: searching or filtering
+    a dashboard would have to mean something different for every panel on it.
+  #}
+  {% if views|length > 1 and not panel %}
+    <div class="toolbar">
+      <div class="view-switch" role="tablist" aria-label="View">
+        {% for v in views %}
+          <a role="tab" aria-selected="{{ 'true' if v.name == current_view else 'false' }}"
+             class="view-tab {{ 'active' if v.name == current_view }}"
+             href="{{ request|querystring(view=v.name, page=None) }}">{{ v.label }}</a>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+
+  {#
+    Each panel loads itself. The page arrives immediately and fills in as the
+    queries return, so a dashboard is as slow as its slowest panel only for
+    that panel -- and a panel is the real view, fetched from the real handler,
+    not a second rendering of it that could drift.
+  #}
+  <div class="dashboard" style="--dash-columns: {{ spec.columns }}">
+    {% for entry in panels %}
+      <section class="dash-panel" style="--dash-span: {{ entry.panel.span }}">
+        <header class="dash-panel-head">
+          <h2>{{ entry.title }}</h2>
+          <a class="link" href="/r/{{ entry.resource.name }}?view={{ entry.panel.view }}">Open</a>
+        </header>
+        <div class="dash-panel-body" {% if entry.panel.height %}style="height: {{ entry.panel.height }}"{% endif %}
+             hx-get="{{ entry.url }}" hx-trigger="load" hx-swap="innerHTML">
+          <p class="muted">Loading {{ entry.resource.label_plural|lower }}…</p>
+        </div>
+      </section>
+    {% else %}
+      <p class="muted">This dashboard has no panels you can see.</p>
+    {% endfor %}
+  </div>
+{% endblock %}

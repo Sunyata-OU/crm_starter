@@ -102,9 +102,60 @@ ChartView(group_by="stage", measure=Measure(Agg.SUM, "amount"), chart="column")
 
 PivotView(rows=("owner",), columns=("stage",),
           measures=(Measure(Agg.SUM, "amount"),))
+
+# Rows that expand. `parent_field` names this resource's own parent column,
+# so the tree recurses; naming `child_resource` instead hangs a different
+# resource under each row, one level deep.
+TreeView(columns=[Column("name", link=True), "city"], parent_field="parent_id")
+TreeView(parent_field="company_id", child_resource="contacts")
+
+# Bars along a time axis. Both dates are required: a bar needs two, and
+# inventing the second would draw a schedule the data does not claim.
+GanttView(start_field="created_at", end_field="expected_close",
+          group_by="stage", progress_field="probability", default_scale="month")
+
+# Pins on a map, from a latitude/longitude pair.
+MapView(lat_field="latitude", lon_field="longitude", title_field="name")
+
+# Outstanding work, crossed by who owns it and what kind it is. States are
+# computed against today, so nothing has to be swept overnight to stay true.
+ActivityView(row_field="owner", activity_field="kind", due_field="due_on",
+             done_filter=Condition("done", Op.EQ, False))
+
+# Several views on one page. Each panel is fetched separately, from the same
+# handler that serves it as a full page.
+DashboardView(panels=[
+    Panel(view="chart", span=1),
+    Panel(view="activity", resource="activities", span=2),
+], columns=2)
 ```
 
 Views are switchable from the toolbar; the list route picks one from `?view=`.
+`?view=kanban` reaches a board and `?view=hierarchy` a tree, because those are
+the names people look for.
+
+### How a view is put together
+
+Every kind is the same three pieces, which is what makes adding another one
+small:
+
+| Piece | Where |
+| --- | --- |
+| The spec | a `View` subclass in `app/resources/views.py`, exposing `field_names` |
+| The query | a `case` in the `match spec.kind` in `app/web/routes/resource.py` |
+| The markup | `app/templates/views/<kind>.html`, overridable per resource |
+
+A tree also has a fragment route, `/r/<resource>/<pk>/children`, which returns
+one level at a time: a row's toggle asks for its children at `depth + 1`, and
+those rows carry toggles of their own. The server never holds more than one
+level, so depth costs nothing until someone opens it. A dashboard panel is the
+ordinary view with `?panel=1`, which swaps the page shell for a bare layout --
+the handler, the query, the permission check and the template are unchanged.
+
+Maps are the one view that reaches outside: tiles come from
+`CRM_MAP_TILE_URL`, which defaults to public OpenStreetMap. Empty it and the
+map becomes a list of located records, which is what an air-gapped install
+wants.
 
 ## Actions
 

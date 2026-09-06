@@ -22,6 +22,7 @@ from app.fields.types import (
     BackrefField,
     BooleanField,
     DateTimeField,
+    DecimalField,
     EmailField,
     FileField,
     ImageField,
@@ -41,8 +42,10 @@ from app.resources.views import (
     DetailView,
     FormView,
     ListView,
+    MapView,
     SearchSpec,
     Section,
+    TreeView,
 )
 
 MANIFEST = {
@@ -103,6 +106,12 @@ def _companies() -> Resource:
             TextField("country", in_filter=True, inline_editable=True),
             TextField("owner", label="Account owner", in_filter=True, inline_editable=True),
             TextAreaField("notes", rows=4),
+            # A company under a company. The relation points at this same
+            # resource, which is all the tree view needs to recurse.
+            RelationField("parent_id", label="Parent company", resource="companies",
+                          display="name", in_filter=True, in_list=False),
+            DecimalField("latitude", places=6, in_list=False, in_detail=False),
+            DecimalField("longitude", places=6, in_list=False, in_detail=False),
             # Contacts point back here; resolved by querying the contacts
             # resource rather than by a join, so the two could live in
             # different databases.
@@ -125,15 +134,35 @@ def _companies() -> Resource:
                 default_sort=["name"],
                 bulk_actions=["delete"],
             ),
+            # Group structure, one level at a time. `parent_id` points at this
+            # same resource, so opening a row asks for the companies whose
+            # parent it is -- and those rows expand the same way, without the
+            # server ever holding more than one level.
+            TreeView(
+                columns=[Column("name", link=True, width="30%"), "industry", "city", "owner"],
+                parent_field="parent_id",
+                label="Group structure",
+                default_sort=["name"],
+            ),
+            MapView(
+                lat_field="latitude",
+                lon_field="longitude",
+                title_field="name",
+                subtitle_field="city",
+                color_field="industry",
+                label="Offices",
+                zoom=6,
+            ),
             FormView([
                 Section("Identity", ["name", "website", "industry", "size"], columns=2),
-                Section("Location", ["city", "country"], columns=2),
-                Section("Ownership", ["owner", "notes"], columns=1),
+                Section("Location", ["city", "country", "latitude", "longitude"], columns=2),
+                Section("Ownership", ["owner", "parent_id", "notes"], columns=2),
             ]),
             DetailView(
                 sections=[
                     Section("Overview", ["name", "website", "industry", "size"], columns=2),
                     Section("Location", ["city", "country", "owner"], columns=3),
+                    Section("Group", ["parent_id"], columns=1),
                     Section("Notes", ["notes"], columns=1),
                 ],
                 title_field="name",

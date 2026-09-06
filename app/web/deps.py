@@ -46,7 +46,9 @@ class AppState:
 
 
 #: View kinds whose template includes the search-and-filter toolbar.
-TOOLBAR_VIEWS = frozenset({"list", "board", "calendar", "chart", "pivot"})
+TOOLBAR_VIEWS = frozenset(
+    {"list", "board", "calendar", "chart", "pivot", "tree", "gantt", "map", "activity"}
+)
 
 
 class View:
@@ -249,7 +251,15 @@ class View:
         column's choices -- which may be a callable that goes to a backend --
         for markup nobody renders.
         """
-        if kind in TOOLBAR_VIEWS:
+        # A panel is this same view rendered inside a dashboard: the handler,
+        # the query and the template are unchanged, only the page around them
+        # goes away. Templates pick that up by extending `layout` rather than
+        # base.html directly, so a view is embeddable without knowing it is.
+        panel = self.param("panel") == "1"
+        context.setdefault("panel", panel)
+        context.setdefault("layout", "views/_bare.html" if panel else "base.html")
+
+        if kind in TOOLBAR_VIEWS and not panel:
             from app.web.filters import active_filters, filter_schema
 
             context.setdefault("chips", active_filters(dict(self.request.query_params), resource))

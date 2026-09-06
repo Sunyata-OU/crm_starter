@@ -1,0 +1,65 @@
+{% extends layout|default("base.html") %}
+{% block title %}{{ resource.label_plural }}{% endblock %}
+{% block heading %}{{ resource.label_plural }} · {{ spec.label }}{% endblock %}
+
+{% block content %}
+  {% if not panel %}{% include "views/_toolbar.html" %}{% endif %}
+
+  {#
+    Rows are whoever owns the work, columns are the kind of work, and a cell is
+    coloured by the most pressing record in it. The states are computed against
+    today at render time, so a page loaded tomorrow reads correctly without
+    anything having been swept overnight.
+  #}
+  <div class="matrix-wrap">
+    <table class="data-table activity">
+      <thead>
+        <tr>
+          <th>{{ resource.field(spec.row_field).label }}</th>
+          {% for activity in activities %}
+            <th class="align-center">{{ activity.label }}</th>
+          {% endfor %}
+          <th class="align-right total-col">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <th scope="row">{{ row.label }}</th>
+            {% set total = namespace(n=0) %}
+            {% for activity in activities %}
+              {% set cell = cells.get((row.value, activity.value)) %}
+              <td class="align-center activity-cell {{ 'state-' ~ cell.state if cell }}">
+                {% if cell %}
+                  {% set total.n = total.n + cell.records|length %}
+                  <a class="activity-chip"
+                     href="{{ request|querystring(view='list', page=None, **{
+                            'f.' ~ spec.row_field: row.value,
+                            'f.' ~ spec.activity_field: activity.value}) }}"
+                     title="{{ cell.records|length }} {{ activity.label|lower }}{{ ', soonest ' ~ cell.due if cell.due }}">
+                    {{ cell.records|length }}
+                    {% if cell.due %}<span class="activity-due">{{ cell.due|date }}</span>{% endif %}
+                  </a>
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+            {% endfor %}
+            <td class="align-right total-col"><strong>{{ total.n }}</strong></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="99"><p class="muted">Nothing outstanding.</p></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <p class="activity-key muted">
+    <span class="dot state-overdue"></span> Overdue
+    <span class="dot state-today"></span> Due today
+    <span class="dot state-planned"></span> Later
+    {% if truncated %}
+      · showing the first {{ counted }} records; narrow the filters to see the rest
+    {% endif %}
+  </p>
+{% endblock %}

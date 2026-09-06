@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from datetime import date, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
@@ -19,6 +20,7 @@ from fastapi import APIRouter, Depends, Request
 from starlette.responses import RedirectResponse, Response, StreamingResponse
 
 from app.auth.permissions import require_can
+from app.core import clock
 from app.core.errors import NotFound, UnsupportedOperation, ValidationFailed
 from app.core.query import (
     Agg,
@@ -31,6 +33,7 @@ from app.core.query import (
     Sort,
     SortDir,
     and_,
+    or_,
 )
 from app.core.results import Record, WriteStatus
 from app.resources.form_engine import FormEngine
@@ -68,6 +71,16 @@ async def list_records(resource_name: str, view: View = Depends(build_view)) -> 
             return await _render_calendar(view, resource, spec)
         case "chart" | "pivot":
             return await _render_chart(view, resource, spec)
+        case "tree":
+            return await _render_tree(view, resource, spec)
+        case "gantt":
+            return await _render_gantt(view, resource, spec)
+        case "map":
+            return await _render_map(view, resource, spec)
+        case "activity":
+            return await _render_activity(view, resource, spec)
+        case "dashboard":
+            return await _render_dashboard(view, resource, spec)
 
     return await _render_list(view, resource, spec)
 
@@ -488,6 +501,546 @@ def _max_value(rows: list[dict[str, Any]], spec: Any) -> float:
     return max(values) if values else 0.0
 
 
+# -- tree ------------------------------------------------------------------
+
+
+def _tree_child_resource(view: View, resource: Resource, spec: Any) -> Resource:
+    """The resource hung under each row -- this one, unless another is named."""
+    if spec.self_referential:
+        return resource
+    return view.registry.resource(spec.child_resource)
+
+
+def _parent_value(child: Resource, spec: Any, pk: Any) -> Any:
+    """``pk`` as the parent column stores it.
+
+    A key arrives from the URL as text, and a provider that stores it as an
+    integer matches neither ``"3"`` nor rows it should. The field coerces it
+    the same way it coerces a value typed into the filter panel.
+    """
+    field = child.get_field(spec.parent_field)
+    return field.parse_filter_value(Op.EQ, pk) if field is not None else pk
+
+
+async def _child_counts(
+    view: View, child: Resource, spec: Any, keys: Sequence[Any]
+) -> dict[Any, int] | None:
+    """How many children each of ``keys`` has, in one query.
+
+    ``None`` means the provider cannot answer, which is different from "no
+    children": the caller then offers every row a toggle rather than deciding
+    from a number it does not have. Guessing wrong in the other direction --
+    hiding the toggle -- would make a populated branch look like a leaf.
+    """
+    if not keys:
+        return {}
+    measure = Measure(Agg.COUNT)
+    agg = AggSpec(
+        group_by=(spec.parent_field,),
+        measures=(measure,),
+        filter=Condition(spec.parent_field, Op.IN, list(keys)),
+        scope=child.policy.scope(view.identity),
+    )
+    try:
+        rows = await child.provider.aggregate(agg, view.ctx)
+    except UnsupportedOperation:
+        return None
+    return {row.get(spec.parent_field): row.get(measure.alias) or 0 for row in rows}
+
+
+async def _tree_nodes(
+    view: View, child: Resource, spec: Any, records: Sequence[Record], depth: int
+) -> list[dict[str, Any]]:
+    """Rows plus what the expander needs to know about each one.
+
+    A tree over two resources is one level deep by definition: contacts hang
+    under companies, and nothing hangs under a contact. Only a self-join
+    recurses, so rows below the first level are offered a toggle only there.
+    """
+    recursing = spec.self_referential or depth == 0
+    if not recursing or depth >= spec.max_depth:
+        return [{"record": r, "depth": depth, "count": None, "expandable": False} for r in records]
+
+    counts = await _child_counts(
+        view, child, spec, [r.pk for r in records if r.pk is not None]
+    )
+    return [
+        {
+            "record": record,
+            "depth": depth,
+            "count": None if counts is None else counts.get(record.pk, 0),
+            # Unknown counts still get a toggle: opening an empty branch says
+            # "nothing here", which is honest. A missing toggle would not be.
+            "expandable": counts is None or counts.get(record.pk, 0) > 0,
+        }
+        for record in records
+    ]
+
+
+async def _render_tree(view: View, resource: Resource, spec: Any) -> Response:
+    """The top of a hierarchy. Branches are fetched when they are opened.
+
+    Searching flattens the tree. A match three levels down is not reachable by
+    opening roots that do not themselves match, so a filtered tree shows every
+    hit at the top level instead of hiding them behind branches the user would
+    have to guess at -- the same choice a file manager makes when you search.
+    """
+    child = _tree_child_resource(view, resource, spec)
+    require_can(child, "read", view.identity)
+
+    user_filter = and_(
+        parse_filters(view.request.query_params, resource, view.identity),
+        _quick_filter(view, resource),
+    )
+    search = view.param("q")
+    flattened = user_filter is not None or bool(search)
+
+    # Only a self-join has roots to restrict to. When the children live on
+    # another resource every row here is a root by construction.
+    roots = (
+        Condition(spec.parent_field, Op.IS_NULL)
+        if spec.self_referential and not flattened
+        else None
+    )
+
+    page_number, page_size = view.page_params(spec.page_size)
+    query = resource.build_query(
+        view.identity,
+        filter=and_(user_filter, roots),
+        search=search or None,
+        sort=parse_sort(view.param("sort"), resource) or tuple(spec.default_sort),
+        page=page_number,
+        page_size=page_size,
+    )
+    page = await resource.provider.list(query, view.ctx)
+    records = await resolve_relations(view, resource, page.items)
+
+    # A flattened tree lists this resource; its rows still hang children of the
+    # child resource, so the counts come from there either way.
+    nodes = await _tree_nodes(view, child, spec, records, depth=0)
+
+    return view.render_view(
+        resource,
+        "tree",
+        spec=spec,
+        nodes=nodes,
+        page=Page(
+            items=records, page=page.page, page_size=page.page_size,
+            total=page.total, has_more=page.has_more,
+        ),
+        query=query,
+        columns=_visible_columns(resource, spec, view),
+        child_resource=child,
+        flattened=flattened,
+        views=resource.switchable_views(),
+        current_view=spec.name,
+        can_create=resource.can("create", view.identity),
+        search_term=search,
+    )
+
+
+# -- gantt -----------------------------------------------------------------
+
+
+def _snap(day: date, scale: str) -> date:
+    """The start of the ``scale`` unit containing ``day``."""
+    if scale == "month":
+        return day.replace(day=1)
+    if scale == "week":
+        return day - timedelta(days=day.weekday())
+    return day
+
+
+def _advance(day: date, scale: str, units: int) -> date:
+    if scale == "month":
+        total = day.month - 1 + units
+        return date(day.year + total // 12, total % 12 + 1, 1)
+    return day + timedelta(days=units * (7 if scale == "week" else 1))
+
+
+def _gantt_columns(start: date, scale: str, span: int) -> list[dict[str, Any]]:
+    """The header cells, and where each one begins."""
+    fmt = {"day": "%-d %b", "week": "%-d %b", "month": "%b %Y"}[scale]
+    return [
+        {"start": (at := _advance(start, scale, i)), "label": at.strftime(fmt)}
+        for i in range(span)
+    ]
+
+
+async def _render_gantt(view: View, resource: Resource, spec: Any) -> Response:
+    """Records drawn as bars across a fixed window of time.
+
+    Only records overlapping the window are fetched -- a schedule stretching
+    over years would otherwise pull every row to draw twelve weeks -- and the
+    bars are positioned as percentages of the window, so nothing measures the
+    page to lay itself out.
+    """
+    scale = view.param("scale") or spec.default_scale
+    if scale not in ("day", "week", "month"):
+        scale = spec.default_scale
+    span = max(1, spec.span)
+
+    anchor = clock.parse_date(view.param("at")) or clock.today(view.timezone)
+    window_start = _snap(anchor, scale)
+    window_end = _advance(window_start, scale, span)
+    total_days = max((window_end - window_start).days, 1)
+
+    query = resource.build_query(
+        view.identity,
+        filter=and_(
+            parse_filters(view.request.query_params, resource, view.identity),
+            _quick_filter(view, resource),
+            # Overlap, not containment: a bar that starts before the window and
+            # ends inside it belongs on screen, and so does its mirror image.
+            Condition(spec.start_field, Op.LT, window_end.isoformat()),
+            Condition(spec.end_field, Op.GTE, window_start.isoformat()),
+        ),
+        search=view.param("q") or None,
+        sort=parse_sort(view.param("sort"), resource)
+        or tuple(spec.default_sort)
+        or (Sort(spec.start_field, SortDir.ASC),),
+        page=1,
+        page_size=spec.limit,
+        with_total=False,
+    )
+    page = await resource.provider.list(query, view.ctx)
+    records = await resolve_relations(view, resource, page.items)
+
+    bars = []
+    for record in records:
+        start = clock.parse_date(record.get(spec.start_field))
+        end = clock.parse_date(record.get(spec.end_field))
+        if start is None or end is None:
+            continue
+        # Clip to the window rather than dropping: a bar running past the edge
+        # should reach the edge, which is how it says "there is more here".
+        visible_start = max(start, window_start)
+        visible_end = min(max(end, start), window_end)
+        offset = (visible_start - window_start).days / total_days * 100
+        width = max((visible_end - visible_start).days / total_days * 100, 1.0)
+        bars.append(
+            {
+                "record": record,
+                "start": start,
+                "end": end,
+                "left": round(offset, 4),
+                "width": round(min(width, 100 - offset), 4),
+                "clipped_start": start < window_start,
+                "clipped_end": end > window_end,
+                "progress": _percent(record.get(spec.progress_field)) if spec.progress_field else None,
+            }
+        )
+
+    return view.render_view(
+        resource,
+        "gantt",
+        spec=spec,
+        bars=bars,
+        groups=_gantt_groups(resource, spec, bars, view),
+        columns=_gantt_columns(window_start, scale, span),
+        scale=scale,
+        window_start=window_start,
+        window_end=window_end,
+        prev_from=_advance(window_start, scale, -span).isoformat(),
+        next_from=_advance(window_start, scale, span).isoformat(),
+        today=clock.today(view.timezone),
+        today_offset=_today_offset(clock.today(view.timezone), window_start, total_days),
+        views=resource.switchable_views(),
+        current_view=spec.name,
+        search_term=view.param("q"),
+    )
+
+
+def _percent(value: Any) -> float | None:
+    try:
+        return max(0.0, min(100.0, float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _today_offset(today: date, window_start: date, total_days: int) -> float | None:
+    """Where to draw the "now" line, or ``None`` when today is off-window."""
+    offset = (today - window_start).days / total_days * 100
+    return round(offset, 4) if 0 <= offset <= 100 else None
+
+
+def _gantt_groups(
+    resource: Resource, spec: Any, bars: list[dict[str, Any]], view: View
+) -> list[dict[str, Any]]:
+    """Bars gathered into bands, or one unnamed band when nothing groups them."""
+    if not spec.group_by:
+        return [{"label": "", "value": None, "bars": bars}]
+    labels = _group_labels(resource, spec, view).get(spec.group_by, {})
+    bands: dict[Any, list[dict[str, Any]]] = {}
+    for bar in bars:
+        bands.setdefault(bar["record"].get(spec.group_by), []).append(bar)
+    return [
+        {"label": labels.get(value, value if value is not None else "None"),
+         "value": value, "bars": rows}
+        for value, rows in bands.items()
+    ]
+
+
+# -- map -------------------------------------------------------------------
+
+
+async def _render_map(view: View, resource: Resource, spec: Any) -> Response:
+    """Records as pins, placed by a coordinate pair.
+
+    Records missing either coordinate are excluded in the query and counted
+    separately, so the page can say how many it could not place. A map that
+    quietly shows nine of twelve offices is worse than one that says so.
+    """
+    user_filter = and_(
+        parse_filters(view.request.query_params, resource, view.identity),
+        _quick_filter(view, resource),
+    )
+    search = view.param("q") or None
+
+    located = resource.build_query(
+        view.identity,
+        filter=and_(
+            user_filter,
+            Condition(spec.lat_field, Op.NOT_NULL),
+            Condition(spec.lon_field, Op.NOT_NULL),
+        ),
+        search=search,
+        page=1,
+        page_size=spec.limit,
+    )
+    page = await resource.provider.list(located, view.ctx)
+    records = await resolve_relations(view, resource, page.items)
+
+    colours = _group_labels(resource, spec, view) if spec.color_field else {}
+    palette = _choice_colours(resource, spec.color_field, view) if spec.color_field else {}
+    markers = []
+    for record in records:
+        point = _coordinates(record, spec)
+        if point is None:
+            continue
+        title_field = resource.get_field(spec.title_field) if spec.title_field else None
+        markers.append(
+            {
+                "pk": str(record.pk),
+                "lat": point[0],
+                "lon": point[1],
+                "title": (
+                    str(title_field.to_display(title_field.extract(record)))
+                    if title_field is not None
+                    else resource.display_value(record)
+                ),
+                "subtitle": str(record.get(spec.subtitle_field) or "")
+                if spec.subtitle_field
+                else "",
+                "colour": palette.get(record.get(spec.color_field), "") if spec.color_field else "",
+                "url": f"/r/{resource.name}/{record.pk}",
+            }
+        )
+
+    total = page.total if page.total is not None else len(markers)
+    unplaced = await _count_unplaced(view, resource, spec, user_filter, search)
+
+    if view.wants_json:
+        return view.json({"markers": markers, "unplaced": unplaced})
+
+    return view.render_view(
+        resource,
+        "map",
+        spec=spec,
+        markers=markers,
+        # Only choices that actually carry a colour: a legend whose every swatch
+        # is the same default explains nothing and costs a row of the page.
+        legend=[
+            (colours.get(spec.color_field, {}).get(value, value), colour)
+            for value, colour in palette.items()
+            if colour
+        ],
+        placed=total,
+        unplaced=unplaced,
+        tile_url=view.settings.map_tile_url,
+        attribution=view.settings.map_attribution,
+        views=resource.switchable_views(),
+        current_view=spec.name,
+        search_term=view.param("q"),
+    )
+
+
+def _coordinates(record: Record, spec: Any) -> tuple[float, float] | None:
+    """The record's point, or ``None`` if either half is unusable.
+
+    A provider that cannot express "is not null" leaves the filtering to the
+    shim, and a stored empty string passes it; this is where that is caught.
+    """
+    raw_lat, raw_lon = record.get(spec.lat_field), record.get(spec.lon_field)
+    if raw_lat is None or raw_lon is None:
+        return None
+    try:
+        lat, lon = float(raw_lat), float(raw_lon)
+    except (TypeError, ValueError):
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return lat, lon
+
+
+async def _count_unplaced(
+    view: View, resource: Resource, spec: Any, user_filter: Any, search: str | None
+) -> int:
+    """How many matching records have no coordinates, or 0 if unknowable."""
+    query = resource.build_query(
+        view.identity,
+        filter=and_(
+            user_filter,
+            or_(
+                Condition(spec.lat_field, Op.IS_NULL),
+                Condition(spec.lon_field, Op.IS_NULL),
+            ),
+        ),
+        search=search,
+        page=1,
+        page_size=1,
+    )
+    try:
+        return (await resource.provider.list(query, view.ctx)).total or 0
+    except Exception:
+        # The map itself is fine without this number; failing the page over a
+        # footnote would not be.
+        return 0
+
+
+def _choice_colours(resource: Resource, field_name: str, view: View) -> dict[Any, str]:
+    field = resource.get_field(field_name)
+    if field is None:
+        return {}
+    return {c.value: (c.color or "") for c in field.choices(view.ctx)}
+
+
+# -- activity --------------------------------------------------------------
+
+#: How a due date reads against today, worst first. The order is the priority
+#: a cell inherits from the most pressing record in it.
+ACTIVITY_STATES = ("overdue", "today", "planned")
+
+
+def _activity_state(due: date | None, today: date) -> str:
+    if due is None:
+        return "planned"
+    if due < today:
+        return "overdue"
+    return "today" if due == today else "planned"
+
+
+async def _render_activity(view: View, resource: Resource, spec: Any) -> Response:
+    """Outstanding work, crossed by who owns it and what kind it is.
+
+    Counted from the records rather than from an aggregate, because the state
+    of a cell depends on comparing each due date to today -- something no
+    portable GROUP BY expresses, and something that would be wrong by morning
+    if it were stored.
+    """
+    today = clock.today(view.timezone)
+    query = resource.build_query(
+        view.identity,
+        filter=and_(
+            parse_filters(view.request.query_params, resource, view.identity),
+            _quick_filter(view, resource),
+            spec.done_filter,
+        ),
+        search=view.param("q") or None,
+        sort=tuple(spec.default_sort) or (Sort(spec.due_field, SortDir.ASC),),
+        page=1,
+        page_size=spec.limit,
+        with_total=False,
+    )
+    page = await resource.provider.list(query, view.ctx)
+    records = await resolve_relations(view, resource, page.items)
+
+    labels = _group_labels(resource, spec, view)
+    activity_field = resource.get_field(spec.activity_field)
+    activities = (
+        [(c.value, c.label) for c in activity_field.choices(view.ctx)]
+        if activity_field is not None and activity_field.choices(view.ctx)
+        else [
+            (v, str(labels.get(spec.activity_field, {}).get(v, v)))
+            for v in dict.fromkeys(r.get(spec.activity_field) for r in records)
+        ]
+    )
+
+    cells: dict[tuple[Any, Any], dict[str, Any]] = {}
+    rows: dict[Any, str] = {}
+    for record in records:
+        row_value = record.get(spec.row_field)
+        rows.setdefault(
+            row_value,
+            str(
+                record.get(f"{spec.row_field}_label")
+                or labels.get(spec.row_field, {}).get(row_value)
+                or (row_value if row_value is not None else "Unassigned")
+            ),
+        )
+        key = (row_value, record.get(spec.activity_field))
+        due = clock.parse_date(record.get(spec.due_field))
+        cell = cells.setdefault(key, {"records": [], "state": "planned", "due": None})
+        cell["records"].append(record)
+        state = _activity_state(due, today)
+        if ACTIVITY_STATES.index(state) < ACTIVITY_STATES.index(cell["state"]):
+            cell["state"] = state
+        if due is not None and (cell["due"] is None or due < cell["due"]):
+            cell["due"] = due
+
+    return view.render_view(
+        resource,
+        "activity",
+        spec=spec,
+        rows=[{"value": value, "label": label} for value, label in rows.items()],
+        activities=[{"value": value, "label": label} for value, label in activities],
+        cells=cells,
+        today=today,
+        counted=len(records),
+        truncated=len(records) >= spec.limit,
+        views=resource.switchable_views(),
+        current_view=spec.name,
+        search_term=view.param("q"),
+    )
+
+
+# -- dashboard -------------------------------------------------------------
+
+
+async def _render_dashboard(view: View, resource: Resource, spec: Any) -> Response:
+    """A grid of panels, each of which is another view fetched on its own.
+
+    The panels a caller may not read are dropped here rather than left to fail
+    one by one in the browser: a dashboard of permission errors is not a
+    dashboard, and the panel handler would refuse them anyway.
+    """
+    panels = []
+    for panel in spec.panels:
+        target = panel.resource or resource.name
+        if not view.registry.has_resource(target):
+            continue
+        other = view.registry.resource(target)
+        if not other.policy.allows("read", view.identity):
+            continue
+        panels.append(
+            {
+                "panel": panel,
+                "resource": other,
+                "title": panel.title or f"{other.label_plural} · {other.view(panel.view).label}",
+                "url": panel.url(resource.name),
+            }
+        )
+
+    return view.render_view(
+        resource,
+        "dashboard",
+        spec=spec,
+        panels=panels,
+        views=resource.switchable_views(),
+        current_view=spec.name,
+    )
+
+
 # -- reading one record ----------------------------------------------------
 
 
@@ -675,6 +1228,71 @@ async def _load_related(view: View, resource: Resource, record: Record) -> dict[
             )[:4],
         }
     return related
+
+
+@router.get("/{resource_name}/{pk}/children")
+async def tree_children(
+    resource_name: str, pk: str, view: View = Depends(build_view)
+) -> Response:
+    """One branch of a tree, fetched when its row is opened.
+
+    The same fragment answers every level, so the depth comes in as a parameter
+    and goes back out one higher on each row's own toggle. That is what makes
+    the recursion work without the server ever holding the whole tree: each
+    request knows only the node it was asked about.
+    """
+    resource = view.resource(resource_name)
+    require_can(resource, "read", view.identity)
+
+    # Typed loosely, like every other handler here: a view spec is whatever
+    # kind it says it is, and the guard below is what makes that safe.
+    spec: Any = resource.view(view.param("view") or "tree")
+    if spec.kind != "tree":
+        raise NotFound(f"{resource.label} has no tree view called {view.param('view')!r}.")
+
+    child = _tree_child_resource(view, resource, spec)
+    require_can(child, "read", view.identity)
+
+    depth = max(1, view.int_param("depth", 1))
+    if depth > spec.max_depth:
+        # A cycle in the data would otherwise recurse until the browser gives
+        # up. The row says why it stopped rather than simply showing nothing.
+        return view.render(
+            "views/_tree_rows.html", resource=resource, spec=spec, nodes=[],
+            columns=[], depth=depth, too_deep=True, child_resource=child,
+        )
+
+    query = child.build_query(
+        view.identity,
+        filter=Condition(spec.parent_field, Op.EQ, _parent_value(child, spec, pk)),
+        sort=tuple(spec.default_sort),
+        page=1,
+        page_size=spec.child_limit,
+        with_total=False,
+    )
+    page = await child.provider.list(query, view.ctx)
+    records = await resolve_relations(view, child, page.items)
+
+    return view.render(
+        "views/_tree_rows.html",
+        resource=child,
+        spec=spec,
+        nodes=await _tree_nodes(view, child, spec, records, depth),
+        columns=_visible_columns(child, _child_columns(child, spec), view),
+        depth=depth,
+        too_deep=False,
+        child_resource=child,
+    )
+
+
+def _child_columns(child: Resource, spec: Any) -> Any:
+    """What to show for a child row.
+
+    A self-join reuses the tree's own columns -- the rows are the same kind of
+    thing. A child on another resource cannot: its fields are different ones,
+    so it falls back to that resource's list view.
+    """
+    return spec if spec.self_referential else child.view("list")
 
 
 @router.get("/{resource_name}/{pk}/related/{field_name}")

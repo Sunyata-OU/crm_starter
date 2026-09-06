@@ -1,0 +1,49 @@
+{% extends layout|default("base.html") %}
+{% block title %}{{ resource.label_plural }}{% endblock %}
+{% block heading %}{{ resource.label_plural }}{% endblock %}
+
+{% block topbar_actions %}
+  {% if can_create %}
+    <a class="btn btn-primary" href="/r/{{ resource.name }}/new">New {{ resource.label|lower }}</a>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+  {% if not panel %}{% include "views/_toolbar.html" %}{% endif %}
+
+  {#
+    The roots. Every deeper level arrives as the same `_tree_rows.html`
+    fragment, requested by the row above it -- which is why this template has
+    no recursion in it and no notion of how deep the data goes.
+  #}
+  {% if flattened %}
+    <p class="muted tree-note">
+      Showing every match, flattened: a record deeper in the tree cannot be
+      reached by opening parents that do not match.
+      <a class="link" href="{{ request|querystring(q=None, quick=None) }}">Back to the tree</a>
+    </p>
+  {% endif %}
+
+  <div class="table-wrap">
+    <table class="data-table tree">
+      <thead>
+        <tr>
+          <th class="col-expand"><span class="visually-hidden">Expand</span></th>
+          {% for column in columns %}
+            {% set field = resource.field(column.field) %}
+            <th class="align-{{ column.align or field.align }}">{{ column.label or field.label }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% include "views/_tree_rows.html" %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if not nodes %}<p class="muted">{{ spec.empty_message }}</p>{% endif %}
+  {% if not panel %}
+    {% import "macros/pagination.html" as p with context %}
+    {{ p.pagination(page, request) }}
+  {% endif %}
+{% endblock %}

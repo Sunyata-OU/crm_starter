@@ -1,0 +1,57 @@
+{#
+  One level of a tree: the rows for a single parent.
+
+  Each expandable row carries its own `hx-get` back to this same fragment, one
+  depth greater, targeting the row itself with `afterend` -- so children land
+  directly beneath their parent and the browser keeps everything already open.
+  `hx-trigger="click once"` means a branch is fetched the first time it is
+  opened and afterwards only hidden and shown, which is the difference between
+  a tree that feels instant and one that re-queries on every click.
+#}
+{% import "macros/fields.html" as tf with context %}
+
+{% if too_deep %}
+  <tr class="tree-row tree-too-deep" data-depth="{{ depth }}">
+    <td colspan="99" class="muted">
+      Stopped at {{ spec.max_depth }} levels. If this branch should go deeper,
+      raise <code>max_depth</code>; if it should not, the data has a cycle in it.
+    </td>
+  </tr>
+{% endif %}
+
+{% for node in nodes %}
+  {% set record = node.record %}
+  {% set row_id = 'tree-' ~ resource.name ~ '-' ~ record.pk %}
+  <tr class="tree-row" id="{{ row_id }}" data-depth="{{ node.depth }}">
+    <td class="col-expand">
+      {% if node.expandable %}
+        <button type="button" class="tree-toggle" aria-expanded="false"
+                aria-label="Expand {{ resource.display_value(record) }}"
+                hx-get="/r/{{ resource.name }}/{{ record.pk }}/children?view={{ spec.name }}&depth={{ node.depth + 1 }}"
+                hx-target="#{{ row_id }}" hx-swap="afterend"
+                hx-trigger="click once"
+                onclick="crm.toggleBranch(this)">▸</button>
+      {% endif %}
+    </td>
+    {% for column in columns %}
+      {% set field = resource.field(column.field) %}
+      <td class="align-{{ column.align or field.align }}" data-label="{{ column.label or field.label }}">
+        {% if loop.first %}
+          {# The indent lives on the first cell so the hierarchy reads down the
+             column that names the record, not down an empty gutter. #}
+          <span class="tree-indent" style="padding-left: {{ node.depth * 1.25 }}rem"></span>
+          {% if spec.row_link %}
+            <a class="record-link" href="/r/{{ resource.name }}/{{ record.pk }}">
+              {{ tf.display(resource, field, record, templates) }}
+            </a>
+          {% else %}
+            {{ tf.display(resource, field, record, templates) }}
+          {% endif %}
+          {% if node.count %}<span class="tree-count">{{ node.count }}</span>{% endif %}
+        {% else %}
+          {{ tf.display(resource, field, record, templates) }}
+        {% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+{% endfor %}
