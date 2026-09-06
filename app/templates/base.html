@@ -7,8 +7,13 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>◈</text></svg>">
   <link rel="stylesheet" href="/static/crm.css">
   <script src="/static/htmx.min.js" defer></script>
-  <script src="/static/alpine.min.js" defer></script>
+  <!-- crm.js before alpine.min.js: Alpine starts itself in a microtask as soon
+       as its own script finishes, not on DOMContentLoaded, and the microtask
+       queue drains between two deferred scripts. Loaded after Alpine, every
+       x-data="crm.filterPanel(...)" evaluates while window.crm is undefined,
+       and the component silently never initialises. -->
   <script src="/static/crm.js" defer></script>
+  <script src="/static/alpine.min.js" defer></script>
 </head>
 <body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
 
