@@ -38,6 +38,7 @@ from app.core.query import (
 from app.core.results import Record, WriteStatus
 from app.resources.form_engine import FormEngine
 from app.resources.resource import Resource
+from app.resources.views import CALENDAR_SCALES
 from app.web.deps import View, build_view
 from app.web.filters import canonical_params, has_panel_params, parse_filters, parse_sort
 from app.web.uploads import discard, store_uploads
@@ -388,28 +389,100 @@ def _and_condition(existing, field_name: str, value: Any):
     return and_(existing, Condition(field_name, Op.EQ, value))
 
 
+#: How wide each fixed-width calendar scale is. A month is absent because its
+#: width is a property of the month, not of the scale.
+CALENDAR_SPAN_DAYS = {"day": 1, "week": 7, "fortnight": 14}
+
+#: Events drawn per cell before the rest are summarised as "+N more". A day
+#: has one cell the width of the page to spend; a month has thirty-odd.
+CALENDAR_CELL_EVENTS = {"day": 50, "week": 12, "fortnight": 8, "month": 4}
+
+
+def _calendar_anchor(view: View) -> date:
+    """The day the window is drawn around.
+
+    ``at`` is the current spelling, shared with the gantt view. ``year`` and
+    ``month`` are the spelling the month grid shipped with, still honoured so
+    that a bookmarked or shared link keeps landing where it used to.
+    """
+    if (at := clock.parse_date(view.param("at"))) is not None:
+        return at
+    year, month = view.int_param("year", 0), view.int_param("month", 0)
+    if year and month:
+        try:
+            return date(year, max(1, min(12, month)), 1)
+        except ValueError:
+            pass  # A year outside date's range: fall through to today.
+    return clock.today(view.timezone)
+
+
+def _calendar_window(anchor: date, scale: str) -> tuple[date, date]:
+    """The half-open span of days a scale shows around ``anchor``."""
+    if scale == "month":
+        first = _snap(anchor, "month")
+        return first, _advance(first, "month", 1)
+    # A week and a fortnight both begin on a Monday; a day begins on itself.
+    start = anchor if scale == "day" else _snap(anchor, "week")
+    return start, start + timedelta(days=CALENDAR_SPAN_DAYS[scale])
+
+
+def _calendar_shift(start: date, scale: str, units: int) -> date:
+    """Where "previous" and "next" land, one whole window away."""
+    if scale == "month":
+        return _advance(start, "month", units)
+    return start + timedelta(days=units * CALENDAR_SPAN_DAYS[scale])
+
+
+def _calendar_rows(window_start: date, window_end: date, scale: str) -> list[list[date]]:
+    """The grid, as rows of days.
+
+    A month is padded out to whole weeks so its cells line up under Monday
+    through Sunday; the narrower scales already start on the day they mean, so
+    they are simply chopped into sevens -- which leaves a day as a single cell.
+    """
+    if scale == "month":
+        from calendar import Calendar
+
+        days = [d for week in Calendar(firstweekday=0).monthdatescalendar(
+            window_start.year, window_start.month) for d in week]
+    else:
+        days = [window_start + timedelta(days=i) for i in range((window_end - window_start).days)]
+    return [days[i:i + 7] for i in range(0, len(days), 7)]
+
+
+def _calendar_label(window_start: date, window_end: date, scale: str) -> str:
+    """What the window is called, above the grid."""
+    last = window_end - timedelta(days=1)
+    if scale == "month":
+        return window_start.strftime("%B %Y")
+    if scale == "day":
+        return window_start.strftime("%A %-d %B %Y")
+    if window_start.year != last.year:
+        return f"{window_start.strftime('%-d %b %Y')} – {last.strftime('%-d %b %Y')}"
+    if window_start.month != last.month:
+        return f"{window_start.strftime('%-d %b')} – {last.strftime('%-d %b %Y')}"
+    return f"{window_start.strftime('%-d')} – {last.strftime('%-d %b %Y')}"
+
+
 async def _render_calendar(view: View, resource: Resource, spec: Any) -> Response:
-    """Records placed on a month grid by their start date."""
-    from calendar import Calendar
-    from datetime import date
+    """Records placed on a day, week, fortnight or month grid by their start date."""
+    scale = view.param("scale") or spec.default_scale
+    if scale not in CALENDAR_SCALES:
+        scale = spec.default_scale
 
-    today = date.today()
-    year = view.int_param("year", today.year)
-    month = max(1, min(12, view.int_param("month", today.month)))
+    today = clock.today(view.timezone)
+    window_start, window_end = _calendar_window(_calendar_anchor(view), scale)
 
-    first = date(year, month, 1)
-    last = date(year + (month == 12), (month % 12) + 1, 1)
-
-    from app.core.query import and_
-
-    # Restrict to the visible month rather than fetching the whole table; a
-    # calendar over a large resource would otherwise pull every row.
+    # Restrict to the visible window rather than fetching the whole table; a
+    # calendar over a large resource would otherwise pull every row. The days a
+    # month grid borrows from its neighbours are outside that window, and stay
+    # empty: they are there to square off the grid, not to report anything.
     query = resource.build_query(
         view.identity,
         filter=and_(
             parse_filters(view.request.query_params, resource, view.identity),
-            Condition(spec.start_field, Op.GTE, first.isoformat()),
-            Condition(spec.start_field, Op.LT, last.isoformat()),
+            Condition(spec.start_field, Op.GTE, window_start.isoformat()),
+            Condition(spec.start_field, Op.LT, window_end.isoformat()),
         ),
         search=view.param("q"),
         page=1,
@@ -422,16 +495,20 @@ async def _render_calendar(view: View, resource: Resource, spec: Any) -> Respons
         key = str(record.get(spec.start_field) or "")[:10]
         buckets.setdefault(key, []).append(record)
 
-    weeks = Calendar(firstweekday=0).monthdatescalendar(year, month)
-
     return view.render_view(
         resource,
         "calendar",
         spec=spec,
-        weeks=weeks,
+        rows=_calendar_rows(window_start, window_end, scale),
         buckets=buckets,
-        month=month,
-        year=year,
+        scale=scale,
+        scales=CALENDAR_SCALES,
+        cell_events=CALENDAR_CELL_EVENTS[scale],
+        window_start=window_start,
+        window_end=window_end,
+        period_label=_calendar_label(window_start, window_end, scale),
+        prev_at=_calendar_shift(window_start, scale, -1).isoformat(),
+        next_at=_calendar_shift(window_start, scale, 1).isoformat(),
         today=today,
         views=resource.switchable_views(),
         current_view=spec.name,

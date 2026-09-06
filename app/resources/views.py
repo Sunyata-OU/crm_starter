@@ -342,8 +342,20 @@ class BoardView(View):
 # -- calendar --------------------------------------------------------------
 
 
+#: The windows a calendar can be shown through. A month is listed with the
+#: fixed-width scales even though its own width depends on which month it is.
+CALENDAR_SCALES = ("day", "week", "fortnight", "month")
+
+
 class CalendarView(View):
-    """Records placed on a month or week grid by a date field."""
+    """Records placed on a day, week, fortnight or month grid by a date field.
+
+    Every scale is the same seven-column grid seen through a different window,
+    so a day is one cell and a fortnight is two rows of the month's table. The
+    scale is a request parameter, not a property of the view: two people can
+    read the same calendar at different widths, and ``default_scale`` only says
+    which one they land on.
+    """
 
     kind = "calendar"
 
@@ -358,7 +370,7 @@ class CalendarView(View):
         end_field: str = "",
         color_field: str = "",
         all_day: bool = True,
-        default_scale: Literal["month", "week"] = "month",
+        default_scale: Literal["day", "week", "fortnight", "month"] = "month",
     ) -> None:
         super().__init__(name=name, label=label, icon=icon)
         self.start_field = start_field
@@ -366,7 +378,9 @@ class CalendarView(View):
         self.title_field = title_field
         self.color_field = color_field
         self.all_day = all_day
-        self.default_scale = default_scale
+        self.default_scale = (
+            default_scale if default_scale in CALENDAR_SCALES else "month"
+        )
 
     @property
     def field_names(self) -> tuple[str, ...]:

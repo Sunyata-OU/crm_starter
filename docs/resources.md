@@ -96,7 +96,10 @@ FormView([
 BoardView(group_by="stage", card=Card(title="name", badges=["amount"]),
           sum_field="amount")
 
-CalendarView(start_field="due_on", title_field="subject")
+# A day, week, fortnight or month grid. The scale is a request parameter
+# (`?scale=week&at=2026-09-03`), so `default_scale` only says where readers
+# land -- two people can read the same calendar at different widths.
+CalendarView(start_field="due_on", title_field="subject", default_scale="month")
 
 ChartView(group_by="stage", measure=Measure(Agg.SUM, "amount"), chart="column")
 

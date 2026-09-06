@@ -9,48 +9,61 @@
      nothing stored under its key, and a stored one is formatted its own way. #}
   {% set title_field = resource.get_field(spec.title_field) %}
 
+  {# Navigation is by anchor date, so one set of links serves every scale.
+     The old year/month pair is dropped from any link that sets `at`, or the
+     two would disagree about which window is meant. #}
   <div class="calendar-nav">
-    {% set prev_m = 12 if month == 1 else month - 1 %}
-    {% set prev_y = year - 1 if month == 1 else year %}
-    {% set next_m = 1 if month == 12 else month + 1 %}
-    {% set next_y = year + 1 if month == 12 else year %}
-    <a class="btn btn-sm" href="{{ request|querystring(year=prev_y, month=prev_m) }}">← Previous</a>
-    <h2 class="calendar-title">{{ '%04d-%02d'|format(year, month) }}</h2>
-    <a class="btn btn-sm" href="{{ request|querystring(year=next_y, month=next_m) }}">Next →</a>
-    <a class="btn btn-sm" href="{{ request|querystring(year=None, month=None) }}">Today</a>
+    <a class="btn btn-sm"
+       href="{{ request|querystring(at=prev_at, year=None, month=None) }}">← Previous</a>
+    <h2 class="calendar-title">{{ period_label }}</h2>
+    <a class="btn btn-sm"
+       href="{{ request|querystring(at=next_at, year=None, month=None) }}">Next →</a>
+    <a class="btn btn-sm"
+       href="{{ request|querystring(at=None, year=None, month=None) }}">Today</a>
+    <div class="calendar-scales" role="group" aria-label="Scale">
+      {% for option in scales %}
+        <a class="btn btn-sm {{ 'active' if option == scale }}"
+           href="{{ request|querystring(scale=option, at=window_start.isoformat(), year=None, month=None) }}"
+           {% if option == scale %}aria-current="page"{% endif %}>{{ option|capitalize }}</a>
+      {% endfor %}
+    </div>
   </div>
 
-  {# A month is seven columns wide whatever the screen is, so it scrolls. #}
+  {# A week is seven columns wide whatever the screen is, so it scrolls. #}
   <div class="matrix-wrap">
-  <table class="calendar">
+  <table class="calendar calendar-{{ scale }}">
     <thead>
       <tr>
-        {% for label in ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}<th>{{ label }}</th>{% endfor %}
+        {# Named off the first row, so a single day names its own weekday. #}
+        {% for day in rows[0] %}<th>{{ day.strftime('%a') }}</th>{% endfor %}
       </tr>
     </thead>
     <tbody>
-      {% for week in weeks %}
+      {% for week in rows %}
         <tr>
           {% for day in week %}
             {% set key = day.isoformat() %}
             {% set events = buckets.get(key, []) %}
-            <td class="cal-day {{ 'other-month' if day.month != month }} {{ 'today' if day == today }}">
+            {# Outside the window: a month grid's borrowed days, squaring off
+               the weeks. Nothing was fetched for them, so nothing is shown. #}
+            {% set outside = day < window_start or day >= window_end %}
+            <td class="cal-day {{ 'other-month' if outside }} {{ 'today' if day == today }}">
               <div class="cal-date">
                 {% if resource.can('create', identity) %}
                   <a href="/r/{{ resource.name }}/new?with.{{ spec.start_field }}={{ key }}"
                      title="Add on {{ key }}">{{ day.day }}</a>
                 {% else %}{{ day.day }}{% endif %}
               </div>
-              {% for record in events[:4] %}
+              {% for record in events[:cell_events] %}
                 {% set title = title_field.to_display(title_field.extract(record))
                                if title_field else record.get(spec.title_field) %}
                 <a class="cal-event" href="/r/{{ resource.name }}/{{ record.pk }}"
                    title="{{ title }}">
-                  {{ title|string|truncate_chars(22) }}
+                  {{ title|string|truncate_chars(22 if scale == 'month' else 60) }}
                 </a>
               {% endfor %}
-              {% if events|length > 4 %}
-                <span class="cal-more">+{{ events|length - 4 }} more</span>
+              {% if events|length > cell_events %}
+                <span class="cal-more">+{{ events|length - cell_events }} more</span>
               {% endif %}
             </td>
           {% endfor %}
