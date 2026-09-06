@@ -271,6 +271,27 @@ def _coerce_to_column(column: ColumnElement[Any], value: Any) -> Any:
             return Decimal(value)
         except InvalidOperation:
             return value
+    return _to_temporal(python_type, value)
+
+
+def _to_temporal(python_type: Any, value: str) -> Any:
+    """Read an ISO string as the temporal type a column compares against.
+
+    A date given for a timestamp column widens to midnight -- what a caller
+    bounding a day meant by it -- and a timestamp given for a date column keeps
+    the date and drops the clock. A non-temporal column, or a string that will
+    not parse, comes back untouched, so the backend names the type it cannot
+    compare rather than this function inventing a date.
+    """
+    try:
+        if python_type is date_type:
+            return date_type.fromisoformat(value[:10])
+        if python_type is datetime_type:
+            return datetime_type.fromisoformat(value.replace(" ", "T").replace("Z", "+00:00"))
+        if python_type is time_type:
+            return time_type.fromisoformat(value)
+    except ValueError:
+        return value
     return value
 
 
@@ -629,9 +650,8 @@ def _adapt(column: Any, value: Any) -> Any:
     """Coerce a value into what this column's type accepts.
 
     Only string-to-temporal conversion is needed in practice; SQLAlchemy
-    handles everything else. An unparseable string is passed through
-    untouched so the database reports the problem rather than this function
-    guessing.
+    handles everything else. Shares :func:`_to_temporal` with the filter path,
+    so a date written and a date filtered on are read the same way.
     """
     if value is None or not isinstance(value, str):
         return value
@@ -639,22 +659,7 @@ def _adapt(column: Any, value: Any) -> Any:
         python_type = column.type.python_type
     except (NotImplementedError, AttributeError):
         return value
-    if python_type is date_type and not isinstance(value, date_type):
-        try:
-            return date_type.fromisoformat(value[:10])
-        except ValueError:
-            return value
-    if python_type is datetime_type:
-        try:
-            return datetime_type.fromisoformat(value.replace(" ", "T").replace("Z", "+00:00"))
-        except ValueError:
-            return value
-    if python_type is time_type:
-        try:
-            return time_type.fromisoformat(value)
-        except ValueError:
-            return value
-    return value
+    return _to_temporal(python_type, value)
 
 
 def _readable_integrity_error(exc: IntegrityError) -> str:

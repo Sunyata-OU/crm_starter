@@ -173,13 +173,24 @@ class Resource:
         An explicit ``SearchSpec.fields`` wins; otherwise every field marked
         searchable; failing that, the display field, so search is never a no-op
         on a resource whose author did not think about it.
+
+        The fallback is skipped when the display field is computed: a provider
+        can only search what it stores, and naming a column that is not there
+        raises rather than searching nothing.
         """
         if self.search.fields:
             return self.search.fields
         marked = tuple(f.name for f in self.fields if f.searchable)
         if marked:
             return marked
-        return (self.display_field,) if self.display_field else ()
+        if not self.display_field:
+            return ()
+        field = self.get_field(self.display_field)
+        # An undeclared name is left alone: it may be a column the provider has
+        # and the resource simply never declared.
+        if field is not None and field not in self.stored_fields:
+            return ()
+        return (self.display_field,)
 
     def filterable_fields(self) -> tuple[Field, ...]:
         if self.search.filters:
@@ -198,11 +209,17 @@ class Resource:
         return self.pk
 
     def display_value(self, record: Mapping[str, Any]) -> str:
-        """How this record is named in a link, title or typeahead."""
-        value = record.get(self.display_field)
+        """How this record is named in a link, title or typeahead.
+
+        Read through the field rather than off the mapping, so a computed
+        display field produces its value -- nothing is stored under its key --
+        and a stored one is named the way it is shown everywhere else.
+        """
+        field = self.get_field(self.display_field)
+        value = field.extract(record) if field is not None else record.get(self.display_field)
         if value in (None, ""):
             return f"{self.label} #{record.get(self.pk, '?')}"
-        return str(value)
+        return str(field.to_display(value) if field is not None else value)
 
     # -- views --------------------------------------------------------------
 

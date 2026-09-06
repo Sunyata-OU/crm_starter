@@ -10,11 +10,22 @@ swallows its exceptions so a failed lookup cannot break the list it decorates.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import Boolean, Column, Date, Integer, MetaData, Numeric, String, Table
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Integer,
+    MetaData,
+    Numeric,
+    String,
+    Table,
+    Time,
+)
 
 from app.core.query import Condition, Op
 from app.providers.sql import _coerce_value, build_condition, build_filter
@@ -31,6 +42,8 @@ def table() -> Table:
         Column("amount", Numeric(10, 2)),
         Column("active", Boolean),
         Column("closed", Date),
+        Column("start_time", DateTime),
+        Column("opens_at", Time),
     )
 
 
@@ -102,6 +115,78 @@ class TestOtherTypedColumns:
         # Dates are already typed by the field layer before they get here.
         when = date(2026, 6, 15)
         assert params(build_condition(table, Condition("closed", Op.GTE, when))) == [when]
+
+
+class TestTemporalColumns:
+    """The calendar's shape: a month bounded with two ISO strings.
+
+    ``timestamp >= character varying`` is not an operator PostgreSQL has, so
+    every calendar view was a 502 there while SQLite compared the text and got
+    the right answer by luck.
+    """
+
+    def test_a_date_string_widens_to_midnight_for_a_timestamp_column(self, table):
+        # What a caller bounding a day meant by giving a bare date.
+        bound = params(build_condition(table, Condition("start_time", Op.GTE, "2026-09-01")))
+        assert bound == [datetime(2026, 9, 1, 0, 0)]
+
+    def test_the_month_bounds_are_both_converted(self, table):
+        from app.core.query import and_
+
+        tree = and_(
+            Condition("start_time", Op.GTE, "2026-09-01"),
+            Condition("start_time", Op.LT, "2026-10-01"),
+        )
+        assert params(build_filter(table, tree)) == [
+            datetime(2026, 9, 1, 0, 0),
+            datetime(2026, 10, 1, 0, 0),
+        ]
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("2026-09-01T14:30:00", datetime(2026, 9, 1, 14, 30)),
+        ("2026-09-01 14:30:00", datetime(2026, 9, 1, 14, 30)),
+    ])
+    def test_a_timestamp_string_is_read_however_it_is_spelled(self, table, raw, expected):
+        assert params(build_condition(table, Condition("start_time", Op.GTE, raw))) == [expected]
+
+    def test_a_trailing_z_is_read_as_utc(self, table):
+
+        [bound] = params(
+            build_condition(table, Condition("start_time", Op.GTE, "2026-09-01T14:30:00Z"))
+        )
+        assert bound == datetime(2026, 9, 1, 14, 30, tzinfo=UTC)
+
+    def test_a_date_column_keeps_the_date_and_drops_the_clock(self, table):
+        bound = params(build_condition(table, Condition("closed", Op.EQ, "2026-06-15T09:00:00")))
+        assert bound == [date(2026, 6, 15)]
+
+    def test_a_date_string_reaches_a_date_column_as_a_date(self, table):
+        assert params(build_condition(table, Condition("closed", Op.GTE, "2026-06-15"))) == [
+            date(2026, 6, 15)
+        ]
+
+    def test_a_time_column_gets_a_time(self, table):
+        assert params(build_condition(table, Condition("opens_at", Op.GTE, "09:30"))) == [
+            time(9, 30)
+        ]
+
+    def test_every_element_of_an_in_clause_is_converted(self, table):
+        bound = params(build_condition(table, Condition("closed", Op.IN, ["2026-01-05", "2026-02-11"])))
+        assert bound == [date(2026, 1, 5), date(2026, 2, 11)]
+
+    @pytest.mark.parametrize("column,raw", [
+        ("start_time", "next tuesday"),
+        ("closed", "soon"),
+        ("opens_at", "half nine"),
+    ])
+    def test_an_unparseable_value_reaches_the_backend_as_itself(self, table, column, raw):
+        # The backend then names the type it cannot compare, rather than this
+        # coercion inventing a date and answering a different question.
+        assert params(build_condition(table, Condition(column, Op.EQ, raw))) == [raw]
+
+    def test_a_pattern_operator_still_searches_the_text(self, table):
+        [bound] = params(build_condition(table, Condition("closed", Op.CONTAINS, "2026-06")))
+        assert isinstance(bound, str)
 
 
 class TestPatternOperatorsAreExcluded:

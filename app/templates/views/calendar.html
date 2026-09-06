@@ -5,6 +5,10 @@
 {% block content %}
   {% include "views/_toolbar.html" %}
 
+  {# Titles go through the field like every other view: a computed one has
+     nothing stored under its key, and a stored one is formatted its own way. #}
+  {% set title_field = resource.get_field(spec.title_field) %}
+
   <div class="calendar-nav">
     {% set prev_m = 12 if month == 1 else month - 1 %}
     {% set prev_y = year - 1 if month == 1 else year %}
@@ -38,9 +42,11 @@
                 {% else %}{{ day.day }}{% endif %}
               </div>
               {% for record in events[:4] %}
+                {% set title = title_field.to_display(title_field.extract(record))
+                               if title_field else record.get(spec.title_field) %}
                 <a class="cal-event" href="/r/{{ resource.name }}/{{ record.pk }}"
-                   title="{{ record.get(spec.title_field) }}">
-                  {{ record.get(spec.title_field)|string|truncate_chars(22) }}
+                   title="{{ title }}">
+                  {{ title|string|truncate_chars(22) }}
                 </a>
               {% endfor %}
               {% if events|length > 4 %}
