@@ -20,8 +20,6 @@ from __future__ import annotations
 
 import re
 
-from tests.conftest import sign_in
-
 #: Matches the src of any of the page's own scripts, in document order.
 SCRIPT_SRC = re.compile(r'<script src="/static/([^"]+)"')
 
@@ -54,6 +52,5 @@ class TestScriptOrder:
         runs them in document order after parsing rather than as they arrive."""
         html = admin.get("/r/contacts?view=list").text
         for src in script_order(html):
-            assert re.search(
-                r'<script src="/static/%s" defer></script>' % re.escape(src), html
-            ), f"{src} is not deferred"
+            tag = f'<script src="/static/{src}" defer></script>'
+            assert tag in html, f"{src} is not deferred"
