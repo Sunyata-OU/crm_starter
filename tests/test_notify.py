@@ -425,3 +425,29 @@ class TestWithoutAStore:
         service.use([recorder])
         await service.send(Notification(recipient="a@b.test", title="Hello"), CTX)
         assert len(recorder.sent) == 1
+
+
+class TestTheBadgeWithoutAStore:
+    """A deployment can run without the in-app channel, and some do.
+
+    The header stops rendering the bell then -- but a page loaded before the
+    setting changed keeps polling on its own timer, and that poll must not
+    become a 500 from a table this deployment never had.
+    """
+
+    def test_the_count_is_zero_when_the_channel_is_off(self, settings, client, admin):
+        settings.notify_channels = []
+        response = client.get("/notifications/count")
+        assert response.status_code == 200
+        # Zero, and rendered as such: no count bubble, no unread styling.
+        assert 'aria-label="0 unread notifications"' in response.text
+        assert "has-unread" not in response.text
+
+    def test_the_bell_is_not_rendered_when_the_channel_is_off(self, settings, client, admin):
+        # The same settings object the app was built with, so the template
+        # global and the route see the change together.
+        settings.notify_channels = []
+        assert "/notifications/count" not in client.get("/").text
+
+    def test_the_bell_is_rendered_when_it_is_on(self, client, admin):
+        assert "/notifications/count" in client.get("/").text

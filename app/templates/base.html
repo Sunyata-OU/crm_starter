@@ -32,6 +32,13 @@
         <div class="topbar-title">{% block heading %}{{ title|default('') }}{% endblock %}</div>
         <div class="topbar-actions">{% block topbar_actions %}{% endblock %}</div>
         {% if identity and identity.is_authenticated %}
+          {#
+            The in-app channel is the bell, so a deployment that does not run
+            it has nothing for this to show. Rendering it anyway means polling
+            a store that may not exist -- which is a 500 on every page, from a
+            widget nobody asked for.
+          #}
+          {% if 'inapp' in settings.notify_channels %}
           <div class="bell-wrap">
             {# Polls, and re-checks whenever a write announces itself. #}
             <span hx-get="/notifications/count"
@@ -39,6 +46,7 @@
                   hx-swap="innerHTML"></span>
             <div id="notification-panel" class="notification-panel" hidden></div>
           </div>
+          {% endif %}
           <details class="user-menu">
             <summary aria-label="Account menu"><span class="avatar">{{ identity.initials }}</span></summary>
             <div class="menu-panel">

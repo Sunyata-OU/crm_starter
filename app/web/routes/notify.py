@@ -31,13 +31,24 @@ async def bell(view: View = Depends(build_view)) -> Response:
     return view.render("notifications/_panel.html", entries=entries)
 
 
+def _inapp_enabled(view: View) -> bool:
+    """Whether this deployment runs the in-app channel at all.
+
+    The bell is a table, and a deployment can be configured without one. The
+    header stops rendering the bell in that case, but a page loaded before the
+    setting changed keeps polling on its own timer -- so the answer is zero
+    here rather than an error from a store that was never meant to be read.
+    """
+    return "inapp" in view.settings.notify_channels
+
+
 @router.get("/count")
 async def unread_count(view: View = Depends(build_view)) -> Response:
     """Just the number, for the badge.
 
     Its own route so the header can refresh cheaply without rendering the list.
     """
-    if not view.identity.is_authenticated:
+    if not view.identity.is_authenticated or not _inapp_enabled(view):
         return view.render("notifications/_badge.html", count=0)
     count = await notifier.count_unread(view.identity, view.ctx)
     if view.wants_json:
