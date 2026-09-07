@@ -177,6 +177,46 @@ An unrecognised `type` is refused when the connection opens. Ignoring it would
 build an unauthenticated client, and the resulting 401 from the API reads like
 wrong credentials rather than a misspelled type name.
 
+### Acting as the signed-in user
+
+Every mode above authenticates as the *application*, so the API sees one
+identity no matter who clicked. When the API is the real system of record that
+is usually wrong: its audit trail should name the person.
+
+```yaml
+      auth:
+        type: caller_token
+        fallback:                          # used when the caller has no token
+          type: oauth2
+          token_url: https://issuer/oauth/token
+          client_id: ${API_CLIENT_ID}
+          client_secret: ${API_CLIENT_SECRET}
+```
+
+The header is built per request from the caller's own OIDC access token, which
+means two things must both be true: the deployment sets
+`CRM_OIDC_KEEP_ACCESS_TOKEN=true`, and the caller signed in through OIDC.
+
+`fallback` covers everyone else — a background job, the CLI, a caller who
+signed in with a password — and is an ordinary auth block of any of the types
+above. Without it those callers make unauthenticated requests, which is
+occasionally what you want and usually a 401.
+
+Two costs, stated plainly rather than discovered later:
+
+- **The session cookie is signed, not encrypted.** Anyone who can read the
+  cookie can read the token in it. It is `HttpOnly`, `Secure` and `SameSite`,
+  and the holder is the person whose token it is — but this is a decision to
+  take deliberately, which is why the setting is off by default.
+- **A token is large.** If the cookie will not fit in 4 KB the session is
+  stored *without* the token and a warning is logged: writes then fall back to
+  the connection's credentials. The alternative is a cookie the browser
+  silently discards, which signs the person out on their next click.
+
+Only the access token is kept. A refresh token would let whoever reads the
+cookie mint new tokens long after the session ended — a much larger promise
+than "act as this person while they are signed in".
+
 ## Asynchronous writes
 
 If your backend accepts a write without confirming it, say so:

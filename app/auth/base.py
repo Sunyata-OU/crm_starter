@@ -99,6 +99,18 @@ class BaseAuthProvider:
         """Complete a redirect-based flow from the provider's response."""
         return None
 
+    async def callback_with_tokens(
+        self, request: Request
+    ) -> tuple[Identity | None, dict[str, Any]]:
+        """The same completion, plus whatever tokens the provider was issued.
+
+        Declared here rather than only on the provider that has tokens, so a
+        caller can ask any provider without first asking which kind it is. The
+        default answer is honest and useful: the identity, and no tokens --
+        which is exactly the state of a provider that never received any.
+        """
+        return await self.callback(request), {}
+
     async def logout(self, request: Request, response: Response) -> str | None:
         """Clean up, optionally returning a URL to redirect to afterwards."""
         return None
