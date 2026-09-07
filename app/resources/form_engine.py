@@ -270,6 +270,70 @@ class FormEngine:
         return payload
 
 
+def build_prompt_form(
+    resource: Resource, fields: Sequence[Field], *, initial: Mapping[str, Any] | None = None
+) -> Form:
+    """An empty form over an explicit list of fields.
+
+    Used by actions, which ask for values that are frequently not columns on
+    anything: a ban reason, a cancellation note, a date to ban until. The
+    resource is carried only so the template can name what is being acted on.
+    """
+    initial = initial or {}
+    form = Form(resource=resource, is_create=True)
+    for field in fields:
+        value = initial.get(field.name, field.default)
+        form.fields[field.name] = BoundField(
+            field=field, value=field.to_display(value), editable=True
+        )
+    return form
+
+
+def process_prompt_form(
+    resource: Resource, fields: Sequence[Field], data: Mapping[str, Any], ctx: Ctx
+) -> Form:
+    """Coerce and validate values submitted for an action.
+
+    Deliberately not routed through `FormEngine.process`: that filters by the
+    resource's *writable* fields, which is right for an edit form and wrong
+    here. An action's parameters are not written to the resource -- often the
+    resource is read-only and the write happens through an API -- so the
+    policy question they must answer is "may this caller run this action",
+    which the route has already asked.
+    """
+    form = Form(resource=resource, is_create=True)
+    for field in fields:
+        raw = _pick(data, field.name)
+        submitted = field.name in data or field.absent_means_value
+        bound = BoundField(field=field, raw=raw, editable=True)
+        form.fields[field.name] = bound
+
+        try:
+            value = field.coerce(raw, ctx)
+        except ValidationFailed as exc:
+            bound.error = exc.errors.get(field.name, exc.message)
+            form.errors[field.name] = bound.error
+            continue
+
+        if value is EMPTY:
+            if field.required:
+                bound.error = f"{field.label} is required."
+                form.errors[field.name] = bound.error
+                continue
+            bound.value = None if submitted else EMPTY
+            continue
+
+        try:
+            field.validate(value, ctx)
+        except ValidationFailed as exc:
+            bound.error = exc.errors.get(field.name, exc.message)
+            form.errors[field.name] = bound.error
+            continue
+
+        bound.value = value
+    return form
+
+
 def _pick(data: Mapping[str, Any], name: str) -> Any:
     """Read a value from form data, preserving repeated keys as a list.
 

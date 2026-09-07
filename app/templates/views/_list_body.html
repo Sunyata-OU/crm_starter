@@ -8,10 +8,18 @@
     <span class="bulk-count" data-bulk-count>0 selected</span>
     {% for name in spec.bulk_actions %}
       {% set action = resource.actions.get(name) %}
+      {# A parameterised bulk action asks first, carrying the selection into
+         the dialog as hidden inputs -- the form is submitted from there. #}
       <button class="btn btn-sm {{ 'btn-danger' if name == 'delete' or (action and action.style == 'danger') }}"
+              {% if action and action.prompts_for_input %}
+              type="button"
+              hx-get="/r/{{ resource.name }}/bulk/{{ name }}/prompt"
+              hx-include="#bulk-form" hx-target="#modal" hx-swap="innerHTML"
+              {% else %}
               type="submit"
               formaction="/r/{{ resource.name }}/bulk/{{ name }}"
-              {% if name == 'delete' %}onclick="return confirm('Delete the selected records?')"{% endif %}>
+              {% if name == 'delete' %}onclick="return confirm('Delete the selected records?')"{% endif %}
+              {% endif %}>
         {{ action.label if action else name|capitalize }}
       </button>
     {% endfor %}

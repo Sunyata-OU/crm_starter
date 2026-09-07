@@ -95,9 +95,16 @@
               {% for name in spec.row_actions %}
                 {% set action = resource.actions.get(name) %}
                 {% if action and action.visible_for(record, identity) %}
+                  {# An action that needs values opens its dialog; one that does
+                     not still fires straight from the row. #}
                   <button class="btn btn-sm {{ 'btn-danger' if action.style == 'danger' }}"
+                          {% if action.prompts_for_input %}
+                          hx-get="/r/{{ resource.name }}/{{ record.pk }}/action/{{ action.name }}/prompt"
+                          hx-target="#modal" hx-swap="innerHTML"
+                          {% else %}
                           hx-post="/r/{{ resource.name }}/{{ record.pk }}/action/{{ action.name }}"
-                          {% if action.confirm %}hx-confirm="{{ action.confirm }}"{% endif %}>
+                          {% if action.confirm %}hx-confirm="{{ action.confirm }}"{% endif %}
+                          {% endif %}>
                     {{ action.label }}
                   </button>
                 {% endif %}

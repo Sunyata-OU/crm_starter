@@ -1533,6 +1533,63 @@ async def create_record(
     return _after_write(view, resource, result, form, created=True)
 
 
+def _action_prompt(
+    view: View,
+    resource: Resource,
+    action: Any,
+    *,
+    post_url: str,
+    selected: Sequence[str] = (),
+    subject: str = "",
+    form: Any = None,
+    status_code: int = 200,
+) -> Response:
+    """The dialog that collects an action's parameters."""
+    from app.resources.form_engine import build_prompt_form
+
+    return view.render(
+        "views/_action_modal.html",
+        resource=resource,
+        status_code=status_code,
+        form=form if form is not None else build_prompt_form(resource, action.prompts(resource)),
+        title=action.label,
+        label=action.label,
+        style=action.style,
+        post_url=post_url,
+        selected=list(selected),
+        subject=subject,
+    )
+
+
+def _collect_params(
+    view: View, resource: Resource, action: Any, data: Any
+) -> tuple[dict[str, Any], Any]:
+    """Validate what the dialog submitted.
+
+    Returns the values and the form; the form carries the errors, so a caller
+    that gets a form with errors re-renders the dialog rather than running the
+    action with half a payload.
+    """
+    from app.core.errors import ValidationFailed
+    from app.fields.base import EMPTY
+    from app.resources.form_engine import process_prompt_form
+
+    fields = action.prompts(resource)
+    if not fields:
+        return {}, None
+    form = process_prompt_form(resource, fields, data, view.ctx)
+    if not form.valid:
+        return {}, form
+    # A dialog that was never shown submits nothing, and every field would then
+    # report itself missing rather than the caller being told to use the
+    # dialog. Distinguishing them keeps the error honest.
+    if not any(key in data for key in (f.name for f in fields)):
+        raise ValidationFailed(
+            {action.name: f"{action.label} needs to be run from its dialog."}
+        )
+    return {name: value for name, value in form.values().items() if value is not EMPTY}, None
+
+
 # Declared before the per-record write routes below: /r/x/bulk/delete would
 # otherwise match /{resource_name}/{pk}/delete with pk='bulk'.
 @router.post("/{resource_name}/bulk/{action_name}")
@@ -1565,9 +1622,44 @@ async def run_bulk_action(
     if action.handler is None:
         raise ValidationFailed({action_name: "That action cannot be run over a selection."})
     allowed = [r for r in records if action.visible_for(r, view.identity)]
-    result = await action.handler(allowed, view.ctx, resource)
+
+    params: dict[str, Any] = {}
+    if action.prompts_for_input:
+        params, invalid = _collect_params(view, resource, action, form)
+        if invalid is not None:
+            return _action_prompt(
+                view, resource, action,
+                post_url=f"/r/{resource.name}/bulk/{action.name}",
+                selected=[str(r.pk) for r in allowed],
+                subject=f"{len(allowed)} selected.",
+                form=invalid, status_code=422,
+            )
+
+    result = await action.run(allowed, view.ctx, resource, params)
     return _after_action(
         view, resource, action, result, back=f"/r/{resource.name}", count=len(allowed)
+    )
+
+
+@router.get("/{resource_name}/bulk/{action_name}/prompt")
+async def bulk_action_prompt(
+    resource_name: str, action_name: str, request: Request, view: View = Depends(build_view)
+) -> Response:
+    """Ask for an action's parameters before running it over a selection."""
+    resource = view.resource(resource_name)
+    require_can(resource, "read", view.identity)
+    action = resource.action(action_name)
+    if not action.allowed_for(view.identity):
+        from app.core.errors import PermissionDenied
+
+        raise PermissionDenied(f"You cannot run {action.label!r}.")
+
+    selected = [k for k in request.query_params.getlist("selected") if k]
+    return _action_prompt(
+        view, resource, action,
+        post_url=f"/r/{resource.name}/bulk/{action.name}",
+        selected=selected,
+        subject=f"{len(selected)} selected." if selected else "Nothing is selected.",
     )
 
 
@@ -1822,8 +1914,40 @@ async def run_action(
     if action.url or action.handler is None:
         return view.redirect(action.resolve_url(record))
 
-    result = await action.handler([record], view.ctx, resource)
+    params: dict[str, Any] = {}
+    if action.prompts_for_input:
+        params, invalid = _collect_params(view, resource, action, await request.form())
+        if invalid is not None:
+            return _action_prompt(
+                view, resource, action,
+                post_url=f"/r/{resource.name}/{pk}/action/{action.name}",
+                subject=resource.display_value(record),
+                form=invalid, status_code=422,
+            )
+
+    result = await action.run([record], view.ctx, resource, params)
     return _after_action(view, resource, action, result, back=f"/r/{resource.name}/{pk}")
+
+
+@router.get("/{resource_name}/{pk}/action/{action_name}/prompt")
+async def action_prompt(
+    resource_name: str, pk: str, action_name: str, view: View = Depends(build_view)
+) -> Response:
+    """Ask for an action's parameters before running it on one record."""
+    resource = view.resource(resource_name)
+    require_can(resource, "read", view.identity)
+    action = resource.action(action_name)
+    record = await _load(view, resource, pk)
+    if not action.visible_for(record, view.identity):
+        from app.core.errors import PermissionDenied
+
+        raise PermissionDenied(f"You cannot run {action.label!r} on this record.")
+
+    return _action_prompt(
+        view, resource, action,
+        post_url=f"/r/{resource.name}/{pk}/action/{action.name}",
+        subject=resource.display_value(record),
+    )
 
 
 def _after_action(
