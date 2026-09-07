@@ -58,8 +58,13 @@
       <details class="filter-panel">
         <summary class="btn btn-sm">Filters {% if chips %}<span class="badge">{{ chips|length }}</span>{% endif %}</summary>
 
+        {# Single-quoted, and it has to stay that way. `tojson` escapes <, >, &
+           and ' -- deliberately not " -- because it is built for <script>
+           blocks and single-quoted attributes. In a double-quoted attribute
+           the first " in the JSON ends the attribute, Alpine is handed
+           `crm.filterPanel([{`, and the panel never initialises. #}
         <form class="filter-form" method="get" action="/r/{{ resource.name }}"
-              x-data="crm.filterPanel({{ filter_schema|tojson }}, {{ chips|tojson }})" x-cloak>
+              x-data='crm.filterPanel({{ filter_schema|tojson }}, {{ chips|tojson }})' x-cloak>
           {# A GET form replaces the whole query string, so everything the page
              is not about to rewrite has to be repeated here -- the search
              term, the view, the sort, the calendar's month. Listed by
