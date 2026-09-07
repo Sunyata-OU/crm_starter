@@ -12,7 +12,7 @@ import inspect
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dc_field
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from app.core.errors import ConfigError
 from app.core.results import Ctx, Identity, Record, WriteResult
@@ -113,6 +113,21 @@ class ActionHandler(Protocol):
     ) -> ActionResult | None: ...
 
 
+class ParameterisedHandler(Protocol):
+    """The other shape: a handler that asked for ``prompt_fields``.
+
+    Two protocols rather than one with an optional argument, because the
+    difference is not a default value -- it is which of the two calls `run`
+    makes, decided by inspecting the handler. Naming both keeps that decision
+    checkable instead of hidden behind an ``Any``.
+    """
+
+    async def __call__(
+        self, records: Sequence[Record], ctx: Ctx, resource: Resource,
+        *, params: dict[str, Any],
+    ) -> ActionResult | None: ...
+
+
 class Action:
     """A named operation offered on a resource."""
 
@@ -194,7 +209,8 @@ class Action:
         if self.handler is None:
             raise ValueError(f"action {self.name!r} has no handler to run")
         if self._handler_takes_params():
-            return await self.handler(records, ctx, resource, params=params or {})
+            takes_params = cast(ParameterisedHandler, self.handler)
+            return await takes_params(records, ctx, resource, params=params or {})
         return await self.handler(records, ctx, resource)
 
     def _handler_takes_params(self) -> bool:
