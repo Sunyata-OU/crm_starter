@@ -9,6 +9,7 @@ session cannot be revoked before it expires, which is what ``max_age`` is for.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Literal, cast
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -17,7 +18,19 @@ from starlette.responses import Response
 
 from app.core.results import Identity
 
+log = logging.getLogger("crm.auth")
+
 SESSION_SALT = "crm.session"
+
+#: Key the caller's own access token is stored under, when the deployment has
+#: asked for that. Short, because every byte competes with the claims for the
+#: cookie's 4 KB.
+TOKEN_KEY = "at"
+
+#: Browsers drop a cookie larger than this, and drop it *silently* -- the
+#: response looks fine and the next request arrives signed out. Better to
+#: refuse to store the token and say so than to log everybody out.
+COOKIE_LIMIT = 4096
 
 
 class SessionStore:
@@ -58,15 +71,36 @@ class SessionStore:
         return data if isinstance(data, dict) else {}
 
     def write(self, response: Response, data: dict[str, Any]) -> None:
+        payload = self.serializer.dumps(data)
+        if len(payload) > COOKIE_LIMIT and TOKEN_KEY in data:
+            # Dropping the token costs an API call its attribution; dropping
+            # the cookie costs the session. Prefer the smaller loss, and say
+            # which one was taken.
+            log.warning(
+                "session cookie is %d bytes with the access token in it; storing "
+                "the session without it. Writes will fall back to the "
+                "connection's own credentials.",
+                len(payload),
+            )
+            data = {k: v for k, v in data.items() if k != TOKEN_KEY}
+            payload = self.serializer.dumps(data)
         response.set_cookie(
             self.cookie_name,
-            self.serializer.dumps(data),
+            payload,
             max_age=self.max_age,
             httponly=True,
             secure=self.secure,
             samesite=self.samesite,
             path=self.path,
         )
+
+    def access_token(self, request: Request) -> str:
+        """The caller's own OIDC access token, if one was kept.
+
+        Empty unless `CRM_OIDC_KEEP_ACCESS_TOKEN` is on -- see
+        `app/web/routes/auth.py` for what that setting costs.
+        """
+        return str(self.read(request).get(TOKEN_KEY) or "")
 
     def clear(self, response: Response) -> None:
         response.delete_cookie(self.cookie_name, path=self.path)

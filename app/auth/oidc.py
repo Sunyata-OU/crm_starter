@@ -143,6 +143,17 @@ class OIDCAuth(BaseAuthProvider):
     # -- completing the flow ------------------------------------------------
 
     async def callback(self, request: Request) -> Identity:
+        """Complete the exchange, keeping only who the caller is."""
+        identity, _tokens = await self.callback_with_tokens(request)
+        return identity
+
+    async def callback_with_tokens(self, request: Request) -> tuple[Identity, dict[str, Any]]:
+        """The same exchange, handing back the token bundle as well.
+
+        Separate from `callback` so the protocol every provider implements
+        stays "give me an identity", and holding a bearer token stays a
+        deliberate act by the one caller that has decided to.
+        """
         if error := request.query_params.get("error"):
             raise AuthError(
                 f"The identity provider refused the sign-in ({error}).", provider=self.name
@@ -191,7 +202,7 @@ class OIDCAuth(BaseAuthProvider):
         if flow.get("nonce") and claims.get("nonce") not in (None, flow["nonce"]):
             raise AuthError("The sign-in response was replayed.", provider=self.name)
 
-        return self.to_identity(claims)
+        return self.to_identity(claims), tokens
 
     def _read_flow(self, request: Request) -> dict[str, Any]:
         raw = request.cookies.get(FLOW_COOKIE)
