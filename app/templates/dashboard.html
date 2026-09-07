@@ -16,7 +16,25 @@
         {% endif %}
       </a>
     {% else %}
-      <p class="muted">No resources are registered yet. Add a module under <code>modules/</code>.</p>
+      {#
+        Two very different situations, and telling a signed-in user with no
+        grants to "add a module" sends them to look for a fault in the
+        deployment. Which one it is turns on whether anything is registered
+        at all.
+      #}
+      {% if registered %}
+        <p class="muted">
+          Nothing here is visible to you. Access is decided by the roles on
+          your account: you signed in as {{ identity.label }} with
+          {% if identity.roles %}
+            {{ identity.roles|sort|join(', ') }}.
+          {% else %}
+            no roles at all.
+          {% endif %}
+        </p>
+      {% else %}
+        <p class="muted">No resources are registered yet. Add a module under <code>modules/</code>.</p>
+      {% endif %}
     {% endfor %}
   </div>
 {% endblock %}

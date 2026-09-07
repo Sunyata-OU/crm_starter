@@ -7,6 +7,7 @@ form rejects bad input, whether a scoped user can reach another's record.
 
 from __future__ import annotations
 
+import pathlib
 import re
 
 import pytest
@@ -353,6 +354,40 @@ class TestSystemPages:
     def test_the_dashboard_counts_each_resource(self, admin):
         html = admin.get("/").text
         assert "Dashboard" in html and "Contacts" in html
+
+    def test_an_empty_dashboard_blames_the_roles_not_the_deployment(self):
+        """A caller who may see nothing is not the same as nothing existing.
+
+        Told to "add a module under modules/", somebody goes looking for a
+        fault in a deployment that is working exactly as configured -- which is
+        precisely the wrong place, since what is missing is a role on their
+        account. The two states are rendered directly: which one you get turns
+        on `registered`, and the demo resources are readable by any signed-in
+        caller, so no fixture produces an empty grid on its own.
+        """
+        from app.auth.base import Identity
+        from app.settings import Settings
+        from app.web.render import Templates
+
+        # Only the dashboard block is under test, so the bare environment is
+        # enough and does not drag in the base layout's request context.
+        env = Templates(Settings()).env
+        template = env.from_string(
+            pathlib.Path("app/templates/dashboard.html").read_text().replace(
+                '{% extends "base.html" %}', ""
+            )
+        )
+        nobody = Identity(subject="u", email="nobody@example.com",
+                          display_name="Nobody", roles=frozenset())
+
+        visible = template.render(cards=[], registered=True, identity=nobody)
+        assert "Nothing here is visible to you" in visible
+        assert "no roles at all" in visible
+        assert "Add a module" not in visible
+
+        empty = template.render(cards=[], registered=False, identity=nobody)
+        assert "Add a module" in empty
+        assert "Nothing here is visible to you" not in empty
 
     def test_health_needs_no_authentication(self, client):
         assert client.get("/healthz").json() == {"status": "ok"}

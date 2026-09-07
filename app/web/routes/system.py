@@ -44,7 +44,14 @@ async def dashboard(view: View = Depends(build_view)) -> Response:
     # as the sum of every backend rather than as slow as the slowest one.
     cards = list(await asyncio.gather(*(count_of(r) for r in visible)))
 
-    return view.render("dashboard.html", cards=cards, title="Dashboard")
+    return view.render(
+        "dashboard.html",
+        cards=cards,
+        # So an empty dashboard can say which of the two things went wrong:
+        # nothing registered, or nothing this caller may see.
+        registered=any(r.in_menu for r in view.registry.resources),
+        title="Dashboard",
+    )
 
 
 @router.get("/healthz")
