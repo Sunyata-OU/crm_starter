@@ -13,6 +13,7 @@ source.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import Any
 
 from app.core.clock import utcnow
 from app.core.query import Agg, Condition, Measure, Op, and_
@@ -31,7 +32,7 @@ from app.fields.types import (
     TextAreaField,
     TextField,
 )
-from app.resources.actions import ActionResult, action
+from app.resources.actions import ActionResult, RowOutcome, action
 from app.resources.policy import OwnerPolicy
 from app.resources.rbac import DbPolicy
 from app.resources.resource import Resource
@@ -119,20 +120,65 @@ async def mark_won(records, ctx: Ctx, resource: Resource) -> ActionResult:
     return ActionResult(message=f"Marked {len(results)} deal(s) as won.", level="success")
 
 
+#: Why a deal was lost. Not a column on the deal -- it is something the person
+#: closing it knows and the record does not, which is exactly what an action's
+#: `prompt_fields` are for.
+LOST_REASONS = [
+    ("price", "Price"),
+    ("competitor", "Went to a competitor"),
+    ("timing", "Bad timing"),
+    ("no_budget", "No budget"),
+    ("no_reply", "Went quiet"),
+]
+
+
 @action(
     "mark_lost",
     "Mark as lost",
     style="danger",
-    confirm="Mark this deal as lost?",
     available=lambda record, identity: record.get("stage") not in CLOSED_STAGES,
+    # Asked before the action runs, and handed to the handler as `params`.
+    # No `confirm` alongside it: the dialog is already a deliberate step, and
+    # two of them in a row is a habit people learn to click through.
+    prompt_fields=[
+        SelectField("lost_reason", label="Reason", choices=LOST_REASONS, required=True),
+        TextAreaField("lost_note", label="Note", rows=3,
+                      help="Anything the next person picking this account up "
+                           "should know."),
+    ],
 )
-async def mark_lost(records, ctx: Ctx, resource: Resource) -> ActionResult:
+async def mark_lost(records, ctx: Ctx, resource: Resource, *, params) -> ActionResult:
+    """Close deals as lost, recording why -- one outcome per record.
+
+    Reported per record rather than as one number: a bulk close over forty
+    deals is forty separate writes, and "Done." would hide the three that were
+    not.
+    """
     today = date.today().isoformat()
-    for r in records:
-        await resource.provider.update(
-            r.pk, {"stage": "lost", "probability": 0, "closed_on": today}, ctx
+    reason = params.get("lost_reason", "")
+    note = (params.get("lost_note") or "").strip()
+    outcomes = []
+    for record in records:
+        result = await resource.provider.update(
+            record.pk,
+            {
+                "stage": "lost",
+                "probability": 0,
+                "closed_on": today,
+                "notes": _with_reason(record.get("notes"), reason, note),
+            },
+            ctx,
         )
-    return ActionResult(message=f"Marked {len(records)} deal(s) as lost.")
+        outcomes.append(
+            RowOutcome(record.pk, not result.failed, result.message or "")
+        )
+    return ActionResult.from_outcomes(outcomes, done="Marked as lost")
+
+
+def _with_reason(existing: Any, reason: str, note: str) -> str:
+    """Append the reason to the deal's notes rather than replacing them."""
+    line = f"Lost ({reason})" + (f": {note}" if note else "")
+    return f"{existing}\n{line}".strip() if existing else line
 
 
 @action(
