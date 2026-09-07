@@ -186,6 +186,8 @@ class OIDCAuth(BaseAuthProvider):
                 info.raise_for_status()
                 claims = info.json()
 
+        claims = self._with_roles_from_access_token(claims, tokens.get("access_token", ""))
+
         if flow.get("nonce") and claims.get("nonce") not in (None, flow["nonce"]):
             raise AuthError("The sign-in response was replayed.", provider=self.name)
 
@@ -229,6 +231,34 @@ class OIDCAuth(BaseAuthProvider):
             timezone=str(claims.get("zoneinfo") or "UTC"),
             locale=str(claims.get("locale") or "en"),
         )
+
+    def _with_roles_from_access_token(
+        self, claims: dict[str, Any], access_token: str
+    ) -> dict[str, Any]:
+        """Borrow the roles claim from the access token when the id token lacks it.
+
+        Keycloak puts roles in the access token and, by default, nowhere else:
+        the built-in role mappers ship with `access.token.claim` on and
+        `id.token.claim` off. An API never notices, because a bearer token is
+        all an API is given. A browser client reading the id token finds no
+        roles at all and signs everybody in with none -- which presents as
+        "SSO works but nobody can see anything", the failure this exists to
+        prevent, and which the default configuration of the most likely issuer
+        walks straight into.
+
+        Only the configured roles claim is taken, and only when the id token
+        does not carry it, so an issuer that does the standard thing is
+        unaffected. Reading it unverified is no weaker than reading the id
+        token the same way: both came from the token endpoint over TLS in
+        response to a code we generated, and neither was supplied by a client.
+        """
+        if _claim(claims, self.roles_claim) is not None:
+            return claims
+        head, _, _ = self.roles_claim.partition(".")
+        borrowed = _decode_id_token(access_token).get(head)
+        if borrowed is None:
+            return claims
+        return {**claims, head: borrowed}
 
     def extract_roles(self, claims: dict[str, Any]) -> frozenset[str]:
         """Map issuer groups onto application roles.

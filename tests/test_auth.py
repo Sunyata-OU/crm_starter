@@ -438,6 +438,63 @@ class TestOIDCNestedRolesClaims:
         assert auth.extract_roles({"roles": ["manager"]}) == frozenset({"manager"})
 
 
+class TestRolesBorrowedFromTheAccessToken:
+    """Keycloak puts realm roles in the access token and nowhere else.
+
+    Its built-in role mappers ship with `access.token.claim` on and
+    `id.token.claim` off, which an API never notices -- a bearer token is all
+    it is given -- and which leaves a browser client reading the id token with
+    no roles at all. Signing in then succeeds and grants nothing, with no
+    error to explain it.
+    """
+
+    def auth(self, **kw):
+        return OIDCAuth(issuer="https://issuer.test", client_id="x", secret_key=SECRET, **kw)
+
+    @staticmethod
+    def jwt(payload: dict) -> str:
+        import base64
+        import json
+
+        def seg(obj):
+            raw = json.dumps(obj).encode()
+            return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+        return f"{seg({'alg': 'RS256'})}.{seg(payload)}.signature"
+
+    def test_roles_are_taken_from_the_access_token_when_the_id_token_lacks_them(self):
+        auth = self.auth(roles_claim="realm_access.roles")
+        access = self.jwt({"realm_access": {"roles": ["admin"]}})
+        claims = auth._with_roles_from_access_token({"sub": "u"}, access)
+        assert auth.extract_roles(claims) == frozenset({"admin"})
+
+    def test_the_id_token_wins_when_it_carries_the_claim(self):
+        auth = self.auth(roles_claim="realm_access.roles")
+        access = self.jwt({"realm_access": {"roles": ["from-access"]}})
+        claims = auth._with_roles_from_access_token(
+            {"sub": "u", "realm_access": {"roles": ["from-id"]}}, access
+        )
+        assert auth.extract_roles(claims) == frozenset({"from-id"})
+
+    def test_an_issuer_carrying_neither_still_falls_back_to_defaults(self):
+        auth = self.auth(roles_claim="realm_access.roles", default_roles=("user",))
+        claims = auth._with_roles_from_access_token({"sub": "u"}, self.jwt({"sub": "u"}))
+        assert auth.extract_roles(claims) == frozenset({"user"})
+
+    def test_an_opaque_access_token_is_not_an_error(self):
+        auth = self.auth(roles_claim="realm_access.roles", default_roles=("user",))
+        claims = auth._with_roles_from_access_token({"sub": "u"}, "not-a-jwt")
+        assert auth.extract_roles(claims) == frozenset({"user"})
+
+    def test_other_claims_are_not_borrowed(self):
+        # Only the configured roles claim; the access token is not a second
+        # source of identity.
+        auth = self.auth(roles_claim="realm_access.roles")
+        access = self.jwt({"realm_access": {"roles": ["admin"]}, "email": "other@x.test"})
+        claims = auth._with_roles_from_access_token({"sub": "u", "email": "real@x.test"}, access)
+        assert claims["email"] == "real@x.test"
+
+
 class TestLoginFlow:
     def test_the_login_page_renders(self, client):
         assert "password" in client.get("/login").text.lower()
