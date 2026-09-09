@@ -1,56 +1,144 @@
 {#
-  A record's history, read from the audit log.
+  A record's activity: what people said, and what changed.
 
-  Showing the before and after of each changed field is the point: "Kim changed
-  the stage" is far less useful than "Kim changed Stage from Proposal to Won".
+  Notes and audit entries share one chronology because they are two halves of
+  the same question. Showing the before and after of each changed field is the
+  point of the second half -- "Kim changed the stage" is far less useful than
+  "Kim changed Stage from Proposal to Won" -- and the first half is the only
+  place the reason for it can be written down.
 #}
-<ol class="timeline">
-  {% for entry in entries %}
-    <li class="timeline-entry timeline-{{ entry.action }}">
-      <div class="timeline-head">
-        <strong>{{ entry.actor }}</strong>
-        <span class="timeline-action">
-          {% if entry.action == 'create' %}created this
-          {% elif entry.action == 'delete' %}deleted this
-          {% else %}made a change
-          {% endif %}
-        </span>
-        {% if entry.status == 'pending' %}
-          <span class="pill pill-blue" title="Accepted but not confirmed">queued</span>
-        {% elif entry.status == 'error' %}
-          <span class="pill pill-red">failed</span>
-        {% endif %}
-      </div>
+{% set panel_id = "timeline-" ~ resource.name ~ "-" ~ record.pk %}
+<div class="timeline-panel" id="{{ panel_id }}">
 
-      <div class="timeline-meta">
-        <time datetime="{{ entry.at }}" title="{{ entry.at|datetime }}">{{ entry.at|ago }}</time>
-      </div>
-
-      {% if entry.changes %}
-        <ul class="change-list">
-          {% for change in entry.changes[:8] %}
-            <li>
-              <span class="change-field">{{ change.label }}</span>
-              {% if entry.action == 'create' %}
-                <span class="change-after">{{ change.after|blank('empty') }}</span>
-              {% else %}
-                <span class="change-before">{{ change.before|blank('empty') }}</span>
-                <span class="change-arrow" aria-hidden="true">→</span>
-                <span class="change-after">{{ change.after|blank('empty') }}</span>
-              {% endif %}
-            </li>
-          {% endfor %}
-          {% if entry.changes|length > 8 %}
-            <li class="muted">and {{ entry.changes|length - 8 }} more</li>
-          {% endif %}
-        </ul>
-      {% elif entry.detail %}
-        <p class="muted">{{ entry.detail }}</p>
+  {% if can_note %}
+    <form class="note-form" enctype="multipart/form-data"
+          hx-post="/r/{{ resource.name }}/{{ record.pk }}/notes"
+          hx-target="#{{ panel_id }}" hx-swap="outerHTML"
+          hx-encoding="multipart/form-data"
+          hx-disabled-elt="find button">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <textarea name="body" rows="2" class="note-input"
+                placeholder="Write a note. @mention somebody to tell them."
+                aria-label="New note">{{ note_draft }}</textarea>
+      {% if note_error %}
+        <p class="field-error" role="alert">{{ note_error }}</p>
       {% endif %}
-    </li>
-  {% else %}
-    <li class="muted timeline-empty">
-      No history yet. Changes made from here on will be recorded.
-    </li>
-  {% endfor %}
-</ol>
+      <div class="note-form-actions">
+        <input type="file" name="files" multiple class="note-files"
+               aria-label="Attach files to this note">
+        <button type="submit" class="btn btn-primary btn-sm">Add note</button>
+      </div>
+    </form>
+  {% elif note_error %}
+    <p class="field-error" role="alert">{{ note_error }}</p>
+  {% endif %}
+
+  {# Raising a task is a separate capability from writing a note, and is
+     offered on its own: a deployment may have one and not the other. #}
+  {% if can_task %}
+    <p class="note-task-link">
+      <a href="/r/tasks/new?with.resource={{ resource.name }}&amp;with.record_id={{ record.pk }}">
+        Add a task about this record
+      </a>
+    </p>
+  {% endif %}
+
+  <ol class="timeline">
+    {% for entry in entries %}
+      {% if entry.type == 'note' %}
+        <li class="timeline-entry timeline-note {{ 'is-pinned' if entry.pinned }}">
+          <div class="timeline-head">
+            <strong>{{ entry.actor }}</strong>
+            <span class="timeline-action">wrote</span>
+            {% if entry.pinned %}<span class="pill pill-amber">pinned</span>{% endif %}
+          </div>
+
+          <div class="timeline-meta">
+            <time datetime="{{ entry.at }}" title="{{ entry.at|datetime }}">{{ entry.at|ago }}</time>
+            {% if entry.edited_at %}<span class="muted">· edited</span>{% endif %}
+          </div>
+
+          {% if entry.body %}<p class="note-body">{{ entry.body }}</p>{% endif %}
+
+          {% if entry.attachments %}
+            <ul class="note-files-list">
+              {% for file in entry.attachments %}
+                <li>
+                  <a href="/files/{{ file.key }}?store={{ file.store }}">{{ file.filename }}</a>
+                  <span class="muted">{{ file.size|filesize }}</span>
+                </li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+
+          {% if can_note %}
+            <div class="note-actions">
+              <button class="btn btn-link btn-xs"
+                      hx-post="/r/{{ resource.name }}/{{ record.pk }}/notes/{{ entry.id }}/pin"
+                      hx-target="#{{ panel_id }}" hx-swap="outerHTML">
+                {{ 'Unpin' if entry.pinned else 'Pin' }}
+              </button>
+              {% if entry.mine %}
+                <button class="btn btn-link btn-xs danger"
+                        hx-post="/r/{{ resource.name }}/{{ record.pk }}/notes/{{ entry.id }}/delete"
+                        hx-target="#{{ panel_id }}" hx-swap="outerHTML"
+                        hx-confirm="Remove this note?">Remove</button>
+              {% endif %}
+            </div>
+          {% endif %}
+        </li>
+      {% else %}
+        <li class="timeline-entry timeline-{{ entry.action }}">
+          <div class="timeline-head">
+            <strong>{{ entry.actor }}</strong>
+            <span class="timeline-action">
+              {% if entry.action == 'create' %}created this
+              {% elif entry.action == 'delete' %}deleted this
+              {% else %}made a change
+              {% endif %}
+            </span>
+            {% if entry.status == 'pending' %}
+              <span class="pill pill-blue" title="Accepted but not confirmed">queued</span>
+            {% elif entry.status == 'error' %}
+              <span class="pill pill-red">failed</span>
+            {% endif %}
+          </div>
+
+          <div class="timeline-meta">
+            <time datetime="{{ entry.at }}" title="{{ entry.at|datetime }}">{{ entry.at|ago }}</time>
+          </div>
+
+          {% if entry.changes %}
+            <ul class="change-list">
+              {% for change in entry.changes[:8] %}
+                <li>
+                  <span class="change-field">{{ change.label }}</span>
+                  {% if entry.action == 'create' %}
+                    <span class="change-after">{{ change.after|blank('empty') }}</span>
+                  {% else %}
+                    <span class="change-before">{{ change.before|blank('empty') }}</span>
+                    <span class="change-arrow" aria-hidden="true">→</span>
+                    <span class="change-after">{{ change.after|blank('empty') }}</span>
+                  {% endif %}
+                </li>
+              {% endfor %}
+              {% if entry.changes|length > 8 %}
+                <li class="muted">and {{ entry.changes|length - 8 }} more</li>
+              {% endif %}
+            </ul>
+          {% elif entry.detail %}
+            <p class="muted">{{ entry.detail }}</p>
+          {% endif %}
+        </li>
+      {% endif %}
+    {% else %}
+      <li class="muted timeline-empty">
+        {% if can_note %}
+          Nothing here yet. Write the first note.
+        {% else %}
+          No history yet. Changes made from here on will be recorded.
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ol>
+</div>

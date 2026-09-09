@@ -24,7 +24,8 @@
 {% endblock %}
 
 {% block content %}
-<div class="detail-layout {{ 'with-timeline' if spec.timeline }}">
+{% set show_timeline = spec.timeline and settings.timeline %}
+<div class="detail-layout {{ 'with-timeline' if show_timeline }}">
   <div class="detail-main">
     <nav class="breadcrumb"><a href="/r/{{ resource.name }}">{{ resource.label_plural }}</a> <span>/</span> {{ title }}</nav>
 
@@ -59,7 +60,7 @@
     {% endfor %}
   </div>
 
-  {% if spec.timeline %}
+  {% if show_timeline %}
     <aside class="detail-side">
       <section class="card">
         <h2 class="card-title">Activity</h2>

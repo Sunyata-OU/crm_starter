@@ -1,4 +1,4 @@
-"""Roles, permissions, the audit log and notifications, as ordinary resources.
+"""Roles, permissions, the audit log, notes and notifications, as resources.
 
 Loads by default, with :mod:`modules.core_identity`: an application without a
 way to say who may do what is not something a developer should have to build
@@ -41,7 +41,7 @@ from app.resources.views import (
 MANIFEST = {
     "name": "core_access",
     "label": "Access control",
-    "description": "Roles, permissions, the audit trail and notifications.",
+    "description": "Roles, permissions, the audit trail, notes and notifications.",
     "depends": ("core_identity",),
     "menu_groups": {"Administration": 90},
 }
@@ -94,6 +94,7 @@ def register(registry: Registry) -> None:
     registry.add_resource(_roles())
     registry.add_resource(_permissions(registry))
     registry.add_resource(_audit_log())
+    registry.add_resource(_notes())
     registry.add_resource(_notifications())
     registry.add_resource(_jobs(registry))
 
@@ -272,6 +273,76 @@ def _audit_log() -> Resource:
                     Section("Who", ["actor_name", "actor", "actor_provider", "ip"], columns=2),
                     Section("Changes", ["changes"], columns=1),
                     Section("Context", ["status", "detail", "request_id"], columns=3),
+                ],
+                timeline=False,
+            ),
+        ],
+    )
+
+
+def _notes() -> Resource:
+    """What people have said about a record.
+
+    The panel on a record page is where these are written and read; this
+    resource exists so they are also a table an administrator can search, and
+    so the permission machinery treats them like everything else. Addressed by
+    resource name and record id as strings rather than by a foreign key --
+    which is what lets a note hang off a company or a shift owned by another
+    service's database entirely.
+
+    Not audited: a note is already a record of what somebody said, and logging
+    "a note was created" beside the note itself says nothing new.
+    """
+    return Resource(
+        "notes",
+        provider="db.main#timeline_entries",
+        label="Note",
+        icon="✎",
+        menu_group="Administration",
+        menu_order=55,
+        display_field="body",
+        default_sort=["-created_at"],
+        policy=RolePolicy(read=["admin"], create=["admin"], update=["admin"], delete=["admin"]),
+        audited=False,
+        timeline=False,
+        fields=[
+            TextField("id", in_form=False, in_list=False, in_detail=False),
+            DateTimeField("created_at", label="When", readonly=True, in_form=False),
+            TextField("resource", label="About", in_filter=True),
+            TextField("record_id", label="Record"),
+            TextAreaField("body", label="Note", rows=4, searchable=True),
+            TextField("author", label="Who", searchable=True, in_filter=True),
+            TextField("author_id", label="Account", searchable=True, in_list=False),
+            TextField("mentions", label="Mentioned", in_list=False),
+            BooleanField("pinned", label="Pinned", in_filter=True),
+            DateTimeField("edited_at", label="Edited", readonly=True, in_list=False,
+                          in_form=False),
+            TextField("kind", label="Kind", in_list=False, in_form=False),
+        ],
+        search=SearchSpec(
+            fields=("body", "author", "author_id"),
+            filters=("resource", "author", "pinned"),
+        ),
+        views=[
+            ListView(
+                columns=[
+                    Column("created_at", label="When", width="14%"),
+                    Column("author", label="Who", width="16%"),
+                    "resource",
+                    Column("record_id", label="Record", width="10%"),
+                    Column("body", label="Note"),
+                    "pinned",
+                ],
+                default_sort=["-created_at"],
+                inline_edit=False,
+                bulk_actions=["delete"],
+                empty_message="Nothing has been written down yet.",
+            ),
+            DetailView(
+                sections=[
+                    Section("Note", ["body", "created_at", "edited_at", "pinned"], columns=2),
+                    Section("About", ["resource", "record_id"], columns=2),
+                    Section("Who", ["author", "author_id", "mentions"], columns=3),
                 ],
                 timeline=False,
             ),

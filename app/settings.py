@@ -118,6 +118,16 @@ class Settings(BaseSettings):
     #: modules load whatever this says, so listing the demo here cannot leave
     #: an application without accounts or access control.
     modules: CsvList = []
+    #: Whether record pages carry the activity panel -- the notes people
+    #: write and the changes the audit log recorded.
+    #:
+    #: A switch rather than a per-resource setting because the panel is one
+    #: capability with one requirement: a database of this application's own to
+    #: read the audit log and write notes to. A deployment without one
+    #: turns this off, and every record page then renders
+    #: without a panel instead of with one that cannot answer.
+    timeline: bool = True
+
     #: Rows the capability shim may hold in memory to emulate a query stage.
     max_local_rows: int = 5000
     default_page_size: int = 25
@@ -148,6 +158,14 @@ class Settings(BaseSettings):
     #: Email only for this priority and above; a CRM emailing everything is a
     #: CRM people filter into a folder they never read.
     email_min_priority: str = "high"
+
+    # -- tasks --------------------------------------------------------------
+    #: Who hears about work that is due and assigned to nobody.
+    #:
+    #: There is no sensible default. A deployment that names nobody gets no
+    #: such notification, and an unassigned task simply waits -- which is
+    #: honest, where picking somebody arbitrarily would not be.
+    task_watchers: CsvList = []
 
     notify_webhook_url: str = ""
     notify_webhook_style: str = "slack"
@@ -198,6 +216,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "auth_providers", "modules", "dev_auth_roles", "proxy_trusted_ips",
+        "task_watchers",
         "notify_channels",
         mode="before",
     )

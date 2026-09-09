@@ -75,6 +75,7 @@ nothing. See [`auth.md`](auth.md#password-management).
 | `CRM_DATABASE_URL` | `sqlite+aiosqlite:///./crm.db` | Read by `connections.yaml`, not directly by the app. |
 | `CRM_CONNECTIONS_FILE` | `connections.yaml` | Where the connection definitions live. |
 | `CRM_MODULES` | — | Optional modules to enable, comma separated. Additive: `core_identity` and `core_access` load regardless. |
+| `CRM_TIMELINE` | `true` | Carry the activity panel -- notes and audit history -- on record pages. Needs a database of this application's own; turn it off wherever `db.main` is not there. |
 | `CRM_MAX_LOCAL_ROWS` | `5000` | Rows the capability shim may hold in memory to emulate a query stage. Exceeding it raises rather than truncating. |
 | `CRM_DEFAULT_PAGE_SIZE` | `25` | |
 | `CRM_DB_POOL_SIZE` / `CRM_DB_MAX_OVERFLOW` / `CRM_DB_POOL_RECYCLE` | `10` / `20` / `1800` | Read by `connections.yaml`. See [`scaling.md`](scaling.md#one-host). |
@@ -104,6 +105,7 @@ S3 credentials and bucket go in `connections.yaml`.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
+| `CRM_TASK_WATCHERS` | — | Addresses told about a task that is due and assigned to nobody. Empty means nobody is told and the task waits. |
 | `CRM_NOTIFY_CHANNELS` | `inapp` | `inapp`, `email`, `webhook`, `console`. The bell always works; the rest are opt-in. |
 | `CRM_JOBS_CONNECTION` | `db.main` | Which configured connection holds the job queue. Point it at a second database to keep a busy queue's writes off the one serving requests; `crm migrate --all` then covers both. |
 | `CRM_NOTIFY_DELIVERY` | `background` | How a notification reaches its channels. `background` is a task on this worker's event loop — immediate, and lost if the worker stops. `queue` hands it to the durable job queue, which survives a restart **but needs `crm worker` running**. `inline` delivers before the request returns. |

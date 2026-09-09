@@ -12,14 +12,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, Request
 from starlette.responses import RedirectResponse, Response, StreamingResponse
 
+from app import notes
 from app.auth.permissions import require_can
 from app.core import clock
 from app.core.errors import NotFound, RegistryError, UnsupportedOperation, ValidationFailed
@@ -40,9 +42,12 @@ from app.core.results import Ctx, Record, WriteStatus
 from app.resources.form_engine import FormEngine
 from app.resources.resource import Resource
 from app.resources.views import CALENDAR_SCALES
+from app.storage import FileTooLarge, FileTypeNotAllowed, StorageError
 from app.web.deps import View, build_view
 from app.web.filters import canonical_params, has_panel_params, parse_filters, parse_sort
 from app.web.uploads import discard, store_uploads
+
+log = logging.getLogger("crm.resources")
 
 router = APIRouter(prefix="/r", tags=["resources"])
 
@@ -1605,38 +1610,113 @@ async def related_fragment(
 async def record_timeline(
     resource_name: str, pk: str, view: View = Depends(build_view)
 ) -> Response:
-    """What has happened to this record.
+    """What has happened to this record, and what people have said about it.
 
-    Reads the audit log rather than a separate activity table, so the history
-    is a by-product of the writes themselves and cannot drift from them.
+    Two sources, one panel. Changes come from the audit log rather than from a
+    separate activity table, so the history is a by-product of the writes
+    themselves and cannot drift from them; notes come from the notes resource,
+    because nothing else can record why a change was made.
     """
     resource = view.resource(resource_name)
     require_can(resource, "read", view.identity)
     # Load the record first: someone who cannot see it must not be able to read
     # its history either.
     record = await _load(view, resource, pk)
+    return await _timeline(view, resource, record)
 
-    entries: list[Record] = []
+
+async def _timeline(
+    view: View,
+    resource: Resource,
+    record: Record,
+    *,
+    error: str = "",
+    draft: str = "",
+    status_code: int = 200,
+) -> Response:
+    """Render the activity panel. Shared by the reads and by posting a note."""
+    pk = str(record.pk)
+    entries: list[dict[str, Any]] = []
+
+    if not view.settings.timeline:
+        # The panel is not rendered in this deployment, so nothing should be
+        # asking for it -- a hand-typed URL, or a page cached from before it
+        # was turned off. Answering emptily beats querying a database that was
+        # switched off precisely because it is not there.
+        return view.render(
+            "views/_timeline.html", resource=resource, record=record, entries=[],
+            can_note=False, can_task=False, note_error="", note_draft="",
+        )
+
     if view.registry.has_resource("audit_log"):
         log_resource = view.registry.resource("audit_log")
         query = ListQuery(
             filter=and_(
                 Condition("resource", Op.EQ, resource.name),
-                Condition("record_id", Op.EQ, str(pk)),
+                Condition("record_id", Op.EQ, pk),
             ),
             sort=(Sort("at", SortDir.DESC),),
             page_size=view.int_param("limit", 25),
             with_total=False,
         )
         page = await log_resource.provider.list(query, view.ctx)
-        entries = list(page.items)
+        entries.extend(_readable_entry(e, view) for e in page.items)
+
+    store = notes.resource_for(view.registry)
+    if store is not None:
+        written = await notes.for_record(store, resource.name, pk, view.ctx)
+        entries.extend(_readable_note(n, view) for n in written)
+
+    # One chronology, newest first, with the pinned notes lifted out of it --
+    # a note somebody pinned is there to be read before the history, not found
+    # by scrolling to the day it was written.
+    entries.sort(key=lambda e: (bool(e.get("pinned")), _sortable(e.get("at"))), reverse=True)
 
     return view.render(
         "views/_timeline.html",
         resource=resource,
         record=record,
-        entries=[_readable_entry(e, view) for e in entries],
+        entries=entries,
+        can_note=store is not None and view.identity.is_authenticated,
+        # The panel is also where a task about this record starts, when there
+        # is a tasks resource and this caller may add one.
+        can_task=_can_raise_task(view),
+        note_error=error,
+        note_draft=draft,
+        status_code=status_code,
     )
+
+
+def _can_raise_task(view: View) -> bool:
+    """Whether to offer "add a task about this record"."""
+    from app import tasks as task_service
+
+    resource = task_service.resource_for(view.registry)
+    if resource is None or not view.identity.is_authenticated:
+        return False
+    return resource.policy.allows("create", view.identity) and resource.can(
+        "create", view.identity
+    )
+
+
+def _sortable(at: Any) -> float:
+    """A comparable instant, whatever the driver handed back.
+
+    Audit rows and notes come from the same database but not always through the
+    same driver -- SQLite hands back a string where PostgreSQL hands back a
+    datetime -- and sorting a mixed list raises rather than misordering.
+    """
+    if hasattr(at, "timestamp"):
+        try:
+            return at.timestamp()
+        except (ValueError, OverflowError, OSError):
+            return 0.0
+    if isinstance(at, str):
+        try:
+            return datetime.fromisoformat(at).timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
 
 
 def _readable_entry(entry: Record, view: View) -> dict[str, Any]:
@@ -1662,6 +1742,7 @@ def _readable_entry(entry: Record, view: View) -> dict[str, Any]:
                 "after": after,
             })
     return {
+        "type": "change",
         "at": entry.get("at"),
         "actor": entry.get("actor_name") or entry.get("actor") or "Unknown",
         "action": entry.get("action", ""),
@@ -1669,6 +1750,203 @@ def _readable_entry(entry: Record, view: View) -> dict[str, Any]:
         "detail": entry.get("detail"),
         "changes": changes,
     }
+
+
+def _readable_note(note: Record, view: View) -> dict[str, Any]:
+    """Turn a stored note into the same shape the template renders changes in."""
+    return {
+        "type": "note",
+        "id": note.pk,
+        "at": note.get("created_at"),
+        "actor": note.get("author") or note.get("author_id") or "Unknown",
+        "author_id": note.get("author_id") or "",
+        "body": note.get("body") or "",
+        "edited_at": note.get("edited_at"),
+        "pinned": bool(note.get("pinned")),
+        "attachments": notes.attachments_of(note),
+        "mine": notes.may_remove(note, view.identity),
+        "action": "note",
+        "status": "ok",
+        "changes": [],
+    }
+
+
+# -- notes -----------------------------------------------------------------
+#
+# A note is a write to this application's own database about a record that may
+# live in somebody else's. That is why these routes ask for `read` on the
+# record rather than `update`: writing a note changes nothing about the record,
+# and requiring update permission would mean the read-only screens -- which are
+# most of them here -- could never be discussed.
+
+
+def _note_store(view: View) -> Any:
+    """The notes resource, or a 404 explaining why there is not one."""
+    store = notes.resource_for(view.registry)
+    if store is None:
+        raise NotFound("This deployment has nowhere to store notes.")
+    return store
+
+
+@router.post("/{resource_name}/{pk}/notes")
+async def add_note(
+    resource_name: str, pk: str, request: Request, view: View = Depends(build_view)
+) -> Response:
+    """Write a note against this record and hand back the whole panel."""
+    store = _note_store(view)
+    view.require_login()
+    resource = view.resource(resource_name)
+    require_can(resource, "read", view.identity)
+    record = await _load(view, resource, pk)
+
+    form = await request.form()
+    body = str(form.get("body") or "")
+    uploads = [f for f in form.getlist("files") if getattr(f, "filename", "")]
+    if not body.strip() and not uploads:
+        return await _timeline(
+            view, resource, record, error="Write something first.", status_code=422
+        )
+    if len(body) > notes.MAX_BODY:
+        return await _timeline(
+            view, resource, record, draft=body, status_code=422,
+            error=f"That is longer than the {notes.MAX_BODY} characters a note may hold.",
+        )
+    if len(uploads) > notes.MAX_FILES:
+        return await _timeline(
+            view, resource, record, draft=body, status_code=422,
+            error=f"A note may carry at most {notes.MAX_FILES} files.",
+        )
+
+    # Files first: a note pointing at bytes that were never stored is worse
+    # than a rejected submission, and the store is the thing most likely to
+    # refuse -- a file too large, a type not allowed, no bucket configured.
+    try:
+        attachments = await notes.store_files(
+            uploads, resource_name=resource.name, pk=str(pk)
+        ) if uploads else []
+    except (notes.StorageUnavailable, FileTooLarge, FileTypeNotAllowed,
+            StorageError) as exc:
+        return await _timeline(
+            view, resource, record, draft=body, status_code=422,
+            error=str(exc) or "That file could not be stored.",
+        )
+
+    # Read before writing: the people already on the record are both who a bare
+    # @handle can refer to and who should be told about the new note.
+    existing = await notes.for_record(store, resource.name, str(pk), view.ctx)
+    mentioned = await notes.resolve_handles(
+        notes.handles_in(body),
+        known=notes.participants(existing),
+        registry=view.registry,
+        ctx=view.ctx,
+    )
+    note = await notes.add(
+        store,
+        resource_name=resource.name,
+        pk=str(pk),
+        body=body,
+        identity=view.identity,
+        ctx=view.ctx,
+        mentions=mentioned,
+        attachments=attachments,
+    )
+    if note is None:
+        return await _timeline(
+            view, resource, record, draft=body, status_code=422,
+            error="That note could not be saved.",
+        )
+
+    await _announce_note(view, resource, record, body, existing, mentioned)
+    response = await _timeline(view, resource, record)
+    return view.toast(response, "Note added.", "success")
+
+
+async def _announce_note(
+    view: View,
+    resource: Resource,
+    record: Record,
+    body: str,
+    existing: Sequence[Record],
+    mentioned: Sequence[str],
+) -> None:
+    """Tell the people a new note concerns.
+
+    Never allowed to fail the write: the note is saved, and a notification that
+    could not be raised is worth a log line, not the loss of what somebody
+    typed.
+    """
+    from app.notify import notifier
+
+    if not notifier.configured:
+        return
+    me = notes.author_id(view.identity)
+    followers = [
+        who for who in notes.participants(existing, exclude=me) if who not in mentioned
+    ]
+    messages = notes.notifications_for(
+        identity=view.identity,
+        resource_name=resource.name,
+        record_label=resource.display_value(record),
+        pk=str(record.pk),
+        body=body,
+        mentioned=mentioned,
+        also=followers,
+    )
+    try:
+        await notifier.send_many(messages, view.ctx)
+    except Exception:
+        log.exception("could not raise notifications for a note on %s", resource.name)
+
+
+@router.post("/{resource_name}/{pk}/notes/{note_id}/delete")
+async def remove_note(
+    resource_name: str, pk: str, note_id: str, view: View = Depends(build_view)
+) -> Response:
+    """Take down a note. Its author, or an administrator."""
+    store = _note_store(view)
+    view.require_login()
+    resource = view.resource(resource_name)
+    require_can(resource, "read", view.identity)
+    record = await _load(view, resource, pk)
+
+    note = await store.provider.get(note_id, view.ctx)
+    if note is None or str(note.get("record_id")) != str(pk) \
+            or str(note.get("resource")) != resource.name:
+        raise NotFound("No such note on this record.")
+    if not notes.may_remove(note, view.identity):
+        return await _timeline(
+            view, resource, record, status_code=403,
+            error="Only the person who wrote a note may remove it.",
+        )
+
+    await store.provider.delete(note_id, view.ctx)
+    # After the row is gone, for the same reason a replaced upload is deleted
+    # after the record is saved: losing the file while keeping the note that
+    # links to it is the one order that cannot be recovered from.
+    await notes.discard_files(note)
+    response = await _timeline(view, resource, record)
+    return view.toast(response, "Note removed.", "success")
+
+
+@router.post("/{resource_name}/{pk}/notes/{note_id}/pin")
+async def pin_note(
+    resource_name: str, pk: str, note_id: str, view: View = Depends(build_view)
+) -> Response:
+    """Lift a note to the top of the panel, or put it back in the history."""
+    store = _note_store(view)
+    view.require_login()
+    resource = view.resource(resource_name)
+    require_can(resource, "read", view.identity)
+    record = await _load(view, resource, pk)
+
+    note = await store.provider.get(note_id, view.ctx)
+    if note is None or str(note.get("record_id")) != str(pk) \
+            or str(note.get("resource")) != resource.name:
+        raise NotFound("No such note on this record.")
+
+    await store.provider.update(note_id, {"pinned": not bool(note.get("pinned"))}, view.ctx)
+    return await _timeline(view, resource, record)
+
 
 
 # -- writing ---------------------------------------------------------------

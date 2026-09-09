@@ -259,8 +259,14 @@ class Registry:
             )
 
         # An already-constructed provider, for tests and in-memory resources.
+        # Still stamped: which columns record the caller is a property of the
+        # resource, not of where its rows happen to live, and a declaration
+        # that quietly stopped applying against a memory provider would be
+        # tested as working and deployed as not.
         if not isinstance(ref, str):
-            return ensure_full(ref, search_fields=resource.searchable_fields())
+            return ensure_full(
+                self._stamped(ref, resource), search_fields=resource.searchable_fields()
+            )
 
         connection_name, _, target = ref.partition("#")
         connection_name = connection_name.strip()
@@ -293,6 +299,10 @@ class Registry:
                 provider, await self._build_write_half(write_ref, resource)
             )
 
+        # Stamping sits below auditing, so the audit entry records the values
+        # that were actually written rather than the ones submitted.
+        provider = self._stamped(provider, resource)
+
         # Auditing wraps the backend but sits inside the shim: it must see the
         # real write, and it must not see reads the shim performs to emulate a
         # query stage.
@@ -306,6 +316,14 @@ class Registry:
         # Every provider enters the system through the shim, so views can rely
         # on the full query contract regardless of the backend.
         return ensure_full(provider, search_fields=resource.searchable_fields())
+
+    def _stamped(self, provider: Provider, resource: Resource) -> Provider:
+        """Wrap a provider so declared columns record who created a record."""
+        if not resource.stamp:
+            return provider
+        from app.providers.stamp import StampingProvider
+
+        return StampingProvider(provider, resource.stamp)
 
     async def _build_write_half(self, ref: Any, resource: Resource) -> Provider:
         """The write half of a composite, from a name, an object or a factory.

@@ -202,6 +202,7 @@ app/templates/fields/display/currency.html
 - [`resources.md`](resources.md) — the declaration reference
 - [`auth.md`](auth.md) — the four auth providers, RBAC and the audit trail
 - [`files-and-notifications.md`](files-and-notifications.md) — file storage backends and notification channels
+- [`notes-and-tasks.md`](notes-and-tasks.md) — the activity panel, notes with attachments, and the task queue with its sweep
 - [`scaling.md`](scaling.md) — measuring cost, tuning one host, running several
 
 ## Testing

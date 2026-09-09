@@ -65,11 +65,20 @@ class Resource:
         menu_group: str = "",
         menu_order: int = 100,
         description: str = "",
-        #: Record activity against this resource on the timeline.
-        timeline: bool = False,
+        #: Carry the activity panel on this resource's record page: the notes
+        #: people write, and the changes the audit log recorded. On by
+        #: default, because a record somebody can open is a record somebody
+        #: will eventually need to say something about; a resource that should
+        #: not be discussed -- a log table, a queue -- opts out.
+        timeline: bool = True,
         #: Write every change to the audit log. On by default: a resource that
         #: opts out should have to say so.
         audited: bool = True,
+        #: Columns filled from the caller's identity when a record is created,
+        #: as ``{column: "id" | "label" | "email" | "subject"}``. Applied in
+        #: the provider, so every path that creates a record stamps it -- the
+        #: form, an action, the API, a script.
+        stamp: dict[str, str] | None = None,
     ) -> None:
         if not fields:
             raise RegistryError(f"resource {name!r} declares no fields")
@@ -102,6 +111,7 @@ class Resource:
         self.description = description
         self.timeline = timeline
         self.audited = audited
+        self.stamp = dict(stamp or {})
         #: Bound by the registry once connections are open.
         self.provider: Any = None
         #: Set when the resource is registered. Actions use it to reach other

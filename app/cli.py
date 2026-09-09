@@ -653,6 +653,55 @@ def notify_due(
     _echo(f"Delivered {delivered} notification(s).")
 
 
+@app.command("tasks-sweep")
+def tasks_sweep(
+    window_hours: float = typer.Option(
+        24.0, help="How far ahead a due date is worth warning about."
+    ),
+) -> None:
+    """Announce task hand-overs and due dates.
+
+    Run from cron or a scheduler, beside `notify-due`. Like that one it is a
+    sweep and not a timer: it holds no state of its own, reads what the
+    database says now, and records on each task what it has already said, so
+    running it twice sends nothing twice.
+    """
+    from datetime import timedelta
+
+    from app import tasks as task_service
+    from app.main import build_channels, build_registry
+    from app.notify import notifier
+
+    settings = get_settings()
+    registry = build_registry(settings)
+
+    async def go():
+        await registry.bind()
+        notifier.use(build_channels(settings))
+        if not registry.has_resource("tasks"):
+            _fail("No 'tasks' resource is registered.")
+        if registry.has_resource("notifications"):
+            notifier.bind(registry.resource("notifications").provider)
+        # Inline, for the same reason as `notify-due`: a command that exits
+        # before its background tasks finish delivers nothing.
+        notifier.background = False
+        try:
+            return await task_service.sweep(
+                registry,
+                watchers=settings.task_watchers,
+                window=timedelta(hours=window_hours),
+            )
+        finally:
+            await notifier.drain(timeout=settings.shutdown_timeout)
+            await registry.close()
+
+    counts = asyncio.run(go())
+    _echo(
+        f"Told {counts['assigned']} about a new task, {counts['due']} about a due one, "
+        f"and {counts['unassigned']} about work nobody is on."
+    )
+
+
 @app.command("notify-test")
 def notify_test(
     recipient: str = typer.Argument(..., help="Who to notify."),

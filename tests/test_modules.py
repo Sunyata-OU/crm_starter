@@ -72,7 +72,7 @@ class TestLoadingTheRealModules:
         # The platform is always there: enabling a module adds to the default
         # set rather than replacing it.
         assert {m.name for m in loaded} == {
-            "core_identity", "core_access", "demo_crm", "demo_sales",
+            "core_identity", "core_access", "core_tasks", "demo_crm", "demo_sales",
         }
 
     def test_dependencies_are_pulled_in_automatically(self):
@@ -88,18 +88,18 @@ class TestLoadingTheRealModules:
         # configuration nobody means to write.
         registry = Registry()
         loaded = load_modules(registry, enabled=["demo_crm"])
-        assert {"core_identity", "core_access"} <= {m.name for m in loaded}
+        assert {"core_identity", "core_access", "core_tasks"} <= {m.name for m in loaded}
 
     def test_only_the_platform_loads_by_default(self):
-        # The promise of the layout: an application starts with accounts and
-        # access control and nothing else. Every business entity, demo ones
-        # included, is opt-in.
+        # The promise of the layout: an application starts with accounts,
+        # access control and somewhere to write down work, and nothing else.
+        # Every business entity, demo ones included, is opt-in.
         registry = Registry()
         loaded = load_modules(registry)
-        assert {m.name for m in loaded} == {"core_identity", "core_access"}
+        assert {m.name for m in loaded} == {"core_identity", "core_access", "core_tasks"}
         assert set(registry.resource_names) == {
             "users", "api_tokens", "roles", "permissions", "audit_log", "notifications",
-            "jobs",
+            "notes", "tasks", "jobs",
         }
 
     def test_an_unknown_module_name_is_reported(self):
