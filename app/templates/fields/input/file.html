@@ -1,8 +1,9 @@
 {% import "macros/fields.html" as m with context %}
 {%- set info = value|file_info -%}
+{%- set store = field.options.get('store', '') -%}
 {% if info.key %}
   <div class="file-current">
-    <a class="link" href="/files/{{ info.key }}">
+    <a class="link" href="/files/{{ info.key }}{{ '?store=' ~ store if store else '' }}">
       <span aria-hidden="true">📎</span> {{ info.filename|default(info.key, true) }}
     </a>
     {% if info.size %}<span class="muted">{{ info.size|filesize }}</span>{% endif %}

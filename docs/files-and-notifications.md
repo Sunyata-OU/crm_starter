@@ -38,6 +38,18 @@ can supply them. `aioboto3` is imported lazily, so a deployment on local disk
 never installs an AWS SDK — and a missing one produces a sentence saying what
 to install rather than an ImportError at startup.
 
+### More than one store
+
+Stores are named, and a field may say which one holds its column:
+
+```python
+ImageField("picture", readonly=True, store="files.legacy")
+```
+
+That is what a column populated by *another* system needs — a key in somebody
+else's bucket, attached read-only. Without it the key is looked up in the
+default store, which does not have it, and the image renders broken.
+
 ### What the framework enforces
 
 - **A size limit applied while streaming.** The point of a limit is to stop

@@ -4,7 +4,15 @@
   relation across two backends works without a join.
 #}
 {% import "macros/fields.html" as rf with context %}
+{% import "macros/table.html" as rt with context %}
 {% set target = entry.resource %}
+{#
+  Actions the target resource offers on a row -- closing an activity from the
+  deal it hangs under -- offered here as well as on the row's own page. They carry this record's URL as `back`, so running one
+  returns to the screen the button was pressed on rather than to the row it
+  acted on.
+#}
+{% set back = '/r/' ~ resource.name ~ '/' ~ record.pk %}
 <div class="related-header">
   <h2 class="card-title">{{ entry.field.label }}</h2>
   {% if target.can('create', identity) %}
@@ -15,29 +23,66 @@
 </div>
 
 {% if entry.page.items %}
-  <table class="data-table compact stackable">
-    <thead>
-      <tr>{% for name in entry.columns %}<th>{{ target.field(name).label }}</th>{% endfor %}</tr>
-    </thead>
-    <tbody>
-      {% for row in entry.page.items %}
+  {% if entry.tree %}
+    {#
+      Drawn with the target resource's own tree view, so the rows underneath
+      arrive from its `/children` fragment and this template stays ignorant of
+      what is nested inside what.
+    #}
+    <div class="table-wrap">
+      <table class="data-table tree compact">
+        <thead>
+          <tr>
+            <th class="col-expand"><span class="visually-hidden">Expand</span></th>
+            {% for column in entry.tree_columns %}
+              {% set field = target.field(column.field) %}
+              <th class="align-{{ column.align or field.align }}">{{ column.label or field.label }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% with resource = target, spec = entry.tree, nodes = entry.nodes,
+                  columns = entry.tree_columns, depth = 0, too_deep = false %}
+            {% include "views/_tree_rows.html" %}
+          {% endwith %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <table class="data-table compact stackable">
+      <thead>
         <tr>
-          {% for name in entry.columns %}
-            {% set field = target.field(name) %}
-            <td class="align-{{ field.align }}" data-label="{{ field.label }}">
-              {% if loop.first %}
-                <a class="record-link" href="/r/{{ target.name }}/{{ row.pk }}">
-                  {{ rf.display(target, field, row, templates) }}
-                </a>
-              {% else %}
-                {{ rf.display(target, field, row, templates) }}
-              {% endif %}
-            </td>
-          {% endfor %}
+          {% for name in entry.columns %}<th>{{ target.field(name).label }}</th>{% endfor %}
+          {% if entry.row_actions %}<th class="col-actions"><span class="sr-only">Actions</span></th>{% endif %}
         </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+      </thead>
+      <tbody>
+        {% for row in entry.page.items %}
+          <tr>
+            {% for name in entry.columns %}
+              {% set field = target.field(name) %}
+              <td class="align-{{ field.align }}" data-label="{{ field.label }}">
+                {% if loop.first %}
+                  <a class="record-link" href="/r/{{ target.name }}/{{ row.pk }}">
+                    {{ rf.display(target, field, row, templates) }}
+                  </a>
+                {% else %}
+                  {{ rf.display(target, field, row, templates) }}
+                {% endif %}
+              </td>
+            {% endfor %}
+            {% if entry.row_actions %}
+              <td class="col-actions" data-label="Actions">
+                {% for action in target.actions_for('row', row, identity) %}
+                  {{ rt.action_button(target, row, action, back) }}
+                {% endfor %}
+              </td>
+            {% endif %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
   {% if entry.page.total and entry.page.total > entry.page.items|length %}
     <a class="link" href="/r/{{ target.name }}?f.{{ entry.field.via }}={{ record.pk }}">
       See all {{ entry.page.total }}

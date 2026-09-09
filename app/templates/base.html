@@ -7,6 +7,22 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>◈</text></svg>">
   <link rel="stylesheet" href="/static/crm.css">
   <script src="/static/htmx.min.js" defer></script>
+  <script>
+    /* htmx does not swap 4xx by default, which would make every rejected form
+       invisible: the server re-renders it with the errors in place and the
+       browser throws that away. 422 means exactly "here is your form back,
+       with what is wrong" -- so it swaps, and stays an error for anything
+       listening. */
+    window.addEventListener("DOMContentLoaded", function () {
+      if (!window.htmx) return;
+      htmx.config.responseHandling = [
+        { code: "204", swap: false },
+        { code: "[23]..", swap: true },
+        { code: "422", swap: true, error: true },
+        { code: "[45]..", swap: false, error: true },
+      ];
+    });
+  </script>
   <!-- crm.js before alpine.min.js: Alpine starts itself in a microtask as soon
        as its own script finishes, not on DOMContentLoaded, and the microtask
        queue drains between two deferred scripts. Loaded after Alpine, every

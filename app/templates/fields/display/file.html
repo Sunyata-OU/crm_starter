@@ -6,8 +6,9 @@
   a bare string, and still renders as a working link.
 #}
 {%- set info = value|file_info -%}
+{%- set store = field.options.get('store', '') -%}
 {% if info.key %}
-  <a class="link file-link" href="/files/{{ info.key }}">
+  <a class="link file-link" href="/files/{{ info.key }}{{ '?store=' ~ store if store else '' }}">
     <span aria-hidden="true">📎</span>
     <span class="file-name">{{ info.filename|default(info.key, true)|truncate_chars(38) }}</span>
     {% if info.size %}<span class="muted file-size">{{ info.size|filesize }}</span>{% endif %}

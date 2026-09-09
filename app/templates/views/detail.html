@@ -9,8 +9,13 @@
       <a class="btn {{ 'btn-primary' if action.style == 'primary' }}" href="{{ action.resolve_url(record) }}">{{ action.label }}</a>
     {% else %}
       <button class="btn {{ 'btn-primary' if action.style == 'primary' }}{{ ' btn-danger' if action.style == 'danger' }}"
+              {% if action.prompts_for_input %}
+              hx-get="/r/{{ resource.name }}/{{ record.pk }}/action/{{ action.name }}/prompt"
+              hx-target="#modal" hx-swap="innerHTML"
+              {% else %}
               hx-post="/r/{{ resource.name }}/{{ record.pk }}/action/{{ action.name }}"
-              {% if action.confirm %}hx-confirm="{{ action.confirm }}"{% endif %}>{{ action.label }}</button>
+              {% if action.confirm %}hx-confirm="{{ action.confirm }}"{% endif %}
+              {% endif %}>{{ action.label }}</button>
     {% endif %}
   {% endfor %}
   {% if can_update %}
@@ -38,7 +43,7 @@
                       hx-trigger="dblclick" hx-swap="outerHTML"
                       title="Double-click to edit" tabindex="0"
                     {% endif %}>
-                  {{ f.display(resource, field, record, templates) }}
+                  {{ f.display(resource, field, record, templates, full=true) }}
                 </dd>
               </div>
             {% endif %}

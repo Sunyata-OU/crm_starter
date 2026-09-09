@@ -28,6 +28,7 @@ from app.providers.memory import MemoryProvider
 from app.resources.resource import Resource
 from app.resources.views import (
     ActivityView,
+    ChartView,
     Column,
     DashboardView,
     GanttView,
@@ -365,6 +366,76 @@ class TestTheGanttView:
         assert "Nothing scheduled in this window" in html
 
 
+class TestAGanttOfInstants:
+    """Bars over `datetime` columns rather than dates: a shift schedule.
+
+    Two things separate it from the bookings above. A moment belongs to a day
+    only once somebody says whose day, and a bar drawn from the stored value
+    would be a day out for anything late in the evening. And the band over a
+    relation has a name available -- the label fetched for the bars in it --
+    where the field itself has only a key.
+    """
+
+    @pytest.fixture
+    def client(self, settings):
+        from datetime import datetime
+
+        from app.fields.types import DateTimeField, RelationField, SelectField
+
+        resource = Resource(
+            "shifts",
+            provider=MemoryProvider([
+                # 23:00-05:00 UTC: the evening of the 3rd everywhere west of
+                # here, and the small hours of the 4th in Warsaw.
+                {"id": 1, "company_id": "1", "status": "PENDING",
+                 "starts": datetime(2026, 6, 3, 23, 0), "ends": datetime(2026, 6, 4, 5, 0)},
+                {"id": 2, "company_id": "2", "status": "CONFIRMED",
+                 "starts": datetime(2026, 6, 5, 9, 0), "ends": datetime(2026, 6, 5, 17, 0)},
+            ]),
+            fields=[
+                TextField("id", in_form=False),
+                RelationField("company_id", resource="companies", display="name"),
+                SelectField("status", choices=[
+                    ("PENDING", "Pending", "amber"),
+                    ("CONFIRMED", "Confirmed", "green"),
+                ]),
+                DateTimeField("starts", absolute=True),
+                DateTimeField("ends", absolute=True),
+            ],
+            views=[
+                ListView(columns=[Column("starts", link=True)]),
+                GanttView(start_field="starts", end_field="ends",
+                          title_field="starts", group_by="company_id",
+                          color_field="status", default_scale="day", span=10),
+            ],
+        )
+        client = client_for(resource, settings=settings)
+        yield client
+        client.__exit__(None, None, None)
+
+    def test_a_band_is_named_by_the_row_it_points_at(self, client):
+        html = client.get("/r/shifts?view=gantt&at=2026-06-01").text
+        assert "Analytical Engines" in html
+        assert "gantt-band-label\">1<" not in html, "a band headed by a key names nothing"
+
+    def test_a_bar_carries_the_colour_of_its_status(self, client):
+        html = client.get("/r/shifts?view=gantt&at=2026-06-01").text
+        assert "gantt-bar pill-amber" in html
+        assert "gantt-bar pill-green" in html
+
+    def test_a_late_bar_starts_on_the_readers_day(self, client):
+        """23:00 UTC on the 3rd is one in the morning on the 4th in Warsaw, and
+        a bar starting on the 3rd would be a schedule off by a day."""
+        utc = client.get("/r/shifts?view=gantt&at=2026-06-01").text
+        sign_in(client, email="admin@example.com", roles=["admin"],
+                timezone="Europe/Warsaw")
+        warsaw = client.get("/r/shifts?view=gantt&at=2026-06-01").text
+        assert 'title="2026-06-03 &rarr; 2026-06-04"' in utc or \
+               'title="2026-06-03 → 2026-06-04"' in utc
+        assert 'title="2026-06-04 &rarr; 2026-06-04"' in warsaw or \
+               'title="2026-06-04 → 2026-06-04"' in warsaw
+
+
 # -- map -------------------------------------------------------------------
 
 
@@ -473,6 +544,72 @@ class TestTheActivityView:
 # -- dashboard -------------------------------------------------------------
 
 
+class TestAChartOverTime:
+    """A chart of the last six months is a series, and a series read left to
+    right has to be chronological. `sort_by_value` is the right default -- the
+    usual question is "which is biggest" -- and the wrong one here."""
+
+    MONTHS = [
+        {"id": 1, "month": "2026-01", "amount": 900},
+        {"id": 2, "month": "2026-02", "amount": 100},
+        {"id": 3, "month": "2026-03", "amount": 500},
+    ]
+
+    @pytest.fixture
+    def client(self, settings):
+        from app.core.query import Agg, Measure
+
+        registry = build_registry()
+        registry.add_resource(
+            Resource(
+                "revenue",
+                provider=MemoryProvider(self.MONTHS),
+                fields=[
+                    TextField("id", in_form=False),
+                    TextField("month"),
+                    DecimalField("amount"),
+                ],
+                views=[
+                    ChartView(name="by_size", group_by="month",
+                              measure=Measure(Agg.SUM, "amount")),
+                    ChartView(name="over_time", group_by="month",
+                              measure=Measure(Agg.SUM, "amount"), sort=("month",)),
+                ],
+            )
+        )
+        client = TestClient(create_app(settings=settings, registry=registry))
+        client.__enter__()
+        sign_in(client, email="admin@example.com", roles=["admin"])
+        yield client
+        client.__exit__(None, None, None)
+
+    def _months(self, client, view):
+        rows = client.get(
+            f"/r/revenue?view={view}", headers={"Accept": "application/json"}
+        ).json()["rows"]
+        return [row["month"] for row in rows]
+
+    def test_without_a_sort_the_biggest_group_comes_first(self, client):
+        assert self._months(client, "by_size") == ["2026-01", "2026-03", "2026-02"]
+
+    def test_with_one_the_groups_read_in_their_own_order(self, client):
+        assert self._months(client, "over_time") == ["2026-01", "2026-02", "2026-03"]
+
+    def test_declaring_a_sort_turns_ranking_by_measure_off(self):
+        from app.core.query import Agg, Measure
+
+        assert ChartView(group_by="m", measure=Measure(Agg.SUM, "a")).sort_by_value is True
+        ranked = ChartView(group_by="m", measure=Measure(Agg.SUM, "a"), sort=("m",))
+        assert ranked.sort_by_value is False, "the two orderings cannot both win"
+
+    def test_a_sort_is_written_the_way_every_other_sort_is(self):
+        from app.core.query import Agg, Measure, SortDir
+
+        view = ChartView(group_by="m", measure=Measure(Agg.SUM, "a"), sort=("-m",))
+        assert view.sort[0].field == "m"
+        assert view.sort[0].dir is SortDir.DESC
+
+
 class TestTheDashboardView:
     @pytest.fixture
     def client(self, settings):
@@ -497,6 +634,31 @@ class TestTheDashboardView:
         html = client.get("/r/contacts?view=dashboard").text
         assert 'hx-get="/r/contacts?view=list&amp;panel=1"' in html
         assert 'hx-get="/r/companies?view=list&amp;panel=1"' in html
+
+    def test_a_panel_can_be_one_queue_rather_than_the_whole_table(self, settings):
+        """The point of `params`: a dashboard of work queues is the same view
+        several times over, each narrowed to the rows somebody has to act on.
+        Anything the list route reads works, because it is the list route."""
+        registry = build_registry()
+        registry.resource("contacts").add_view(
+            DashboardView(panels=[
+                Panel(view="list", title="Software",
+                      params={"f.industry": "Software", "sort": "-name"}),
+            ])
+        )
+        client = TestClient(create_app(settings=settings, registry=registry))
+        client.__enter__()
+        try:
+            sign_in(client, email="admin@example.com", roles=["admin"])
+            html = client.get("/r/contacts?view=dashboard").text
+            assert "f.industry=Software" in html.replace("&amp;", "&")
+            assert "sort=-name" in html.replace("&amp;", "&")
+        finally:
+            client.__exit__(None, None, None)
+
+    def test_a_panel_parameter_is_escaped_rather_than_pasted_in(self):
+        panel = Panel(view="list", params={"q": "a & b"})
+        assert panel.url("contacts") == "/r/contacts?view=list&panel=1&q=a%20%26%20b"
 
     def test_a_panel_naming_a_missing_resource_is_dropped(self, client):
         html = client.get("/r/contacts?view=dashboard").text

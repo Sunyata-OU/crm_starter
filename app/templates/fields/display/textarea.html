@@ -1,1 +1,10 @@
+{#
+  Shortened in a table cell, where a paragraph would push every other column
+  off the screen, and whole on a detail page -- which is the screen somebody
+  opened to read it. Line breaks are kept in the full form; the CSS does that.
+#}
+{% if full %}
+<div class="text-block text-full">{{ value|blank }}</div>
+{% else %}
 <span class="text-block" title="{{ value|default('', true) }}">{{ value|truncate_chars(120)|blank }}</span>
+{% endif %}

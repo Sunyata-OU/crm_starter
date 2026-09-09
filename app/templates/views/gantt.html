@@ -5,7 +5,32 @@
 {% block content %}
   {% if not panel %}{% include "views/_toolbar.html" %}{% endif %}
 
+  {% import "macros/fields.html" as rf with context %}
   {% set title_field = resource.get_field(spec.title_field) if spec.title_field else none %}
+
+  {#
+    What a bar is called. Three cases, in the order they matter:
+
+    A temporal title goes through the field machinery rather than through
+    `to_display`, because that is what renders an instant in the reader's zone
+    -- a schedule labelled in UTC is the bug this view exists to avoid.
+
+    A relation names itself with the label fetched for this page: grouping
+    shifts by job and then labelling each row with a job *number* would be a
+    Gantt nobody can read.
+
+    Anything else is the field's own value, or the record's display value when
+    the view declares no title at all.
+  #}
+  {% macro bar_label(record) -%}
+    {%- if title_field and title_field.type_name in ('date', 'datetime') -%}
+      {{ rf.display(resource, title_field, record, templates) }}
+    {%- else -%}
+      {{ record.get(spec.title_field ~ '_label')
+         or (title_field.to_display(title_field.extract(record, render_ctx))
+             if title_field else resource.display_value(record, render_ctx)) }}
+    {%- endif -%}
+  {%- endmacro %}
 
   <div class="calendar-nav">
     <a class="btn btn-sm" href="{{ request|querystring(at=prev_from) }}">← Earlier</a>
@@ -49,12 +74,13 @@
           {% set record = bar.record %}
           <div class="gantt-row">
             <div class="gantt-label-col">
-              <a class="record-link" href="/r/{{ resource.name }}/{{ record.pk }}">
-                {% if title_field %}
-                  {{ title_field.to_display(title_field.extract(record)) }}
-                {% else %}
-                  {{ resource.display_value(record) }}
-                {% endif %}
+              {# The label column is the one place the whole string fits: a bar
+                 a day wide in a fortnight-long window is a few percent of the
+                 track, so its own text is clipped by design. The tooltip is
+                 the fallback for a name longer than either. #}
+              <a class="record-link" href="/r/{{ resource.name }}/{{ record.pk }}"
+                 title="{{ resource.display_value(record, render_ctx) }}">
+                {{ bar_label(record) }}
               </a>
             </div>
             <div class="gantt-track">
@@ -67,20 +93,14 @@
                 <div class="gantt-today" style="left: {{ today_offset }}%"
                      title="Today, {{ today }}" aria-hidden="true"></div>
               {% endif %}
-              <a class="gantt-bar {{ 'clipped-start' if bar.clipped_start }} {{ 'clipped-end' if bar.clipped_end }}"
+              <a class="gantt-bar {{ colours.get(record.get(spec.color_field), '') if spec.color_field }} {{ 'clipped-start' if bar.clipped_start }} {{ 'clipped-end' if bar.clipped_end }}"
                  href="/r/{{ resource.name }}/{{ record.pk }}"
                  style="left: {{ bar.left }}%; width: {{ bar.width }}%"
                  title="{{ bar.start }} → {{ bar.end }}">
                 {% if bar.progress is not none %}
                   <span class="gantt-progress" style="width: {{ bar.progress }}%"></span>
                 {% endif %}
-                <span class="gantt-bar-text">
-                  {% if title_field %}
-                    {{ title_field.to_display(title_field.extract(record)) }}
-                  {% else %}
-                    {{ resource.display_value(record) }}
-                  {% endif %}
-                </span>
+                <span class="gantt-bar-text">{{ bar_label(record) }}</span>
               </a>
             </div>
           </div>

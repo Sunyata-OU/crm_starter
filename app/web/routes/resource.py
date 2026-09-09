@@ -11,6 +11,7 @@ fragment, or JSON -- decided by ``View`` from the request headers.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Sequence
 from datetime import date, timedelta
 from typing import Any
@@ -21,7 +22,7 @@ from starlette.responses import RedirectResponse, Response, StreamingResponse
 
 from app.auth.permissions import require_can
 from app.core import clock
-from app.core.errors import NotFound, UnsupportedOperation, ValidationFailed
+from app.core.errors import NotFound, RegistryError, UnsupportedOperation, ValidationFailed
 from app.core.query import (
     Agg,
     AggSpec,
@@ -35,7 +36,7 @@ from app.core.query import (
     and_,
     or_,
 )
-from app.core.results import Record, WriteStatus
+from app.core.results import Ctx, Record, WriteStatus
 from app.resources.form_engine import FormEngine
 from app.resources.resource import Resource
 from app.resources.views import CALENDAR_SCALES
@@ -126,6 +127,12 @@ def _build_query(view: View, resource: Resource, spec: Any) -> ListQuery:
     """Assemble the query for a list-style view from the request."""
     page, page_size = view.page_params(getattr(spec, "page_size", None))
     sort = parse_sort(view.param("sort"), resource) or tuple(getattr(spec, "default_sort", ()))
+    # A grouped list is sorted by its group first, whatever else it is sorted
+    # by. Without that the rows arrive interleaved and the headers would repeat
+    # every few lines -- grouping is an ordering, rendered.
+    group_by = getattr(spec, "group_by", "")
+    if group_by and not any(s.field == group_by for s in sort):
+        sort = (Sort(group_by), *sort)
     return resource.build_query(
         view.identity,
         filter=and_(
@@ -221,7 +228,7 @@ async def _relation_labels(
             # A failing lookup must not take down the list it decorates; the key
             # is still shown and still links.
             break
-        cached.update({str(r.pk): target.display_value(r) for r in page.items})
+        cached.update({str(r.pk): target.display_value(r, view.ctx) for r in page.items})
 
     return {k: cached[k] for k in keys if k in cached}
 
@@ -392,6 +399,91 @@ def _and_condition(existing, field_name: str, value: Any):
     return and_(existing, Condition(field_name, Op.EQ, value))
 
 
+#: Colours a value with no declared one is hashed into. Eight is what the
+#: stylesheet defines, and about as many as anybody can still tell apart in a
+#: grid of small blocks.
+HUE_COUNT = 8
+
+
+def _hue(value: Any) -> str:
+    """A stable colour class for a value the field declares no colour for.
+
+    Hashed rather than assigned in order of appearance, because the same job
+    has to be the same colour on the next page, in another worker and after a
+    restart. ``hash()`` would not do: it is salted per process, so the calendar
+    would repaint itself on every deploy.
+    """
+    digest = hashlib.blake2s(str(value).encode(), digest_size=4).digest()
+    return f"hue-{int.from_bytes(digest, 'big') % HUE_COUNT + 1}"
+
+
+def _colour_classes(
+    resource: Resource, field_name: str, values: Sequence[Any], view: View
+) -> dict[Any, str]:
+    """A CSS class per value of the field a view colours by.
+
+    A field with choices keeps its own colours: a cancelled shift is red
+    because the choice says so, and a second vocabulary for the same statuses
+    would make two screens disagree about what red means.
+
+    A field without them -- a job, of which there are as many as there are jobs
+    -- is hashed into a fixed palette instead. Those colours carry no meaning
+    at all, which is the point: they only have to answer "is this block the
+    same thing as that one", which is the question a calendar of somebody
+    else's week actually raises.
+    """
+    if not field_name:
+        return {}
+    declared = _choice_colours(resource, field_name, view)
+    classes: dict[Any, str] = {}
+    for value in values:
+        if value is None or value == "":
+            classes[value] = ""
+        elif declared:
+            colour = declared.get(value, "")
+            classes[value] = f"pill-{colour}" if colour else ""
+        else:
+            classes[value] = _hue(value)
+    return classes
+
+
+def _is_instant(field: Any) -> bool:
+    """Whether this column holds a moment rather than a calendar date.
+
+    The distinction decides everything below it: a moment is converted into the
+    reader's zone before it is placed on a grid, and a date is never converted
+    at all. See :mod:`app.core.clock`.
+    """
+    return field is not None and field.type_name == "datetime"
+
+
+def _event_day(value: Any, field: Any, tz: str) -> date | None:
+    """The day a record belongs under, in the reader's zone.
+
+    23:30 UTC on the 5th is half past midnight on the 6th in Warsaw. Bucketing
+    on the stored date would put that shift under the 5th while the block
+    printed "00:30" inside it -- a calendar disagreeing with its own contents.
+    """
+    if _is_instant(field):
+        parsed = clock.parse(value)
+        return clock.to_zone(parsed, tz).date() if parsed is not None else None
+    return clock.parse_date(value)
+
+
+def _day_bound(day: date, field: Any, tz: str) -> Any:
+    """Where a day begins, expressed the way the column stores it.
+
+    For an instant that is midnight in the reader's zone, as UTC, and **naive**:
+    a column declared `timestamp without time zone` -- which is what a database
+    this application only reads is most likely to hold -- cannot be compared
+    against an aware value, and getting that comparison right is what this
+    function exists for. For a date column the day is already the value.
+    """
+    if _is_instant(field):
+        return clock.day_bounds(day, tz)[0].replace(tzinfo=None)
+    return day.isoformat()
+
+
 #: How wide each fixed-width calendar scale is. A month is absent because its
 #: width is a property of the month, not of the scale.
 CALENDAR_SPAN_DAYS = {"day": 1, "week": 7, "fortnight": 14}
@@ -468,13 +560,23 @@ def _calendar_label(window_start: date, window_end: date, scale: str) -> str:
 
 
 async def _render_calendar(view: View, resource: Resource, spec: Any) -> Response:
-    """Records placed on a day, week, fortnight or month grid by their start date."""
+    """Records placed on a day, week, fortnight or month grid by their start date.
+
+    Two things here are decisions rather than layout. The grid is drawn around
+    *the reader's* today, and instants are bucketed by their day in the
+    reader's zone, for the reason in :func:`_event_day`. And the quick filter
+    chips the toolbar draws above this grid apply to it, which they did not
+    when this fetched its own rows and forgot to ask for them: the chip lit up
+    and the calendar did not change.
+    """
     scale = view.param("scale") or spec.default_scale
     if scale not in CALENDAR_SCALES:
         scale = spec.default_scale
 
-    today = clock.today(view.timezone)
+    tz = view.timezone
+    today = clock.today(tz)
     window_start, window_end = _calendar_window(_calendar_anchor(view), scale)
+    field = resource.get_field(spec.start_field)
 
     # Restrict to the visible window rather than fetching the whole table; a
     # calendar over a large resource would otherwise pull every row. The days a
@@ -484,19 +586,30 @@ async def _render_calendar(view: View, resource: Resource, spec: Any) -> Respons
         view.identity,
         filter=and_(
             parse_filters(view.request.query_params, resource, view.identity),
-            Condition(spec.start_field, Op.GTE, window_start.isoformat()),
-            Condition(spec.start_field, Op.LT, window_end.isoformat()),
+            _quick_filter(view, resource),
+            Condition(spec.start_field, Op.GTE, _day_bound(window_start, field, tz)),
+            Condition(spec.start_field, Op.LT, _day_bound(window_end, field, tz)),
         ),
         search=view.param("q"),
+        # In time order, so a day with four things on it reads down the cell in
+        # the order they happen.
+        sort=(Sort(spec.start_field, SortDir.ASC),),
         page=1,
         page_size=500,
     )
     page = await resource.provider.list(query, view.ctx)
+    # A block wants to say which job it is, and a job is a key on this row and
+    # a title one resource over. Without this the cell can only name what the
+    # record itself stores, which is how a calendar of shifts ends up labelled
+    # with shift numbers.
+    records = await resolve_relations(view, resource, page.items)
 
     buckets: dict[str, list[Record]] = {}
-    for record in page.items:
-        key = str(record.get(spec.start_field) or "")[:10]
-        buckets.setdefault(key, []).append(record)
+    for record in records:
+        day = _event_day(record.get(spec.start_field), field, tz)
+        if day is None:
+            continue
+        buckets.setdefault(day.isoformat(), []).append(record)
 
     return view.render_view(
         resource,
@@ -504,6 +617,9 @@ async def _render_calendar(view: View, resource: Resource, spec: Any) -> Respons
         spec=spec,
         rows=_calendar_rows(window_start, window_end, scale),
         buckets=buckets,
+        colours=_colour_classes(
+            resource, spec.color_field, [r.get(spec.color_field) for r in records], view
+        ),
         scale=scale,
         scales=CALENDAR_SCALES,
         cell_events=CALENDAR_CELL_EVENTS[scale],
@@ -515,6 +631,7 @@ async def _render_calendar(view: View, resource: Resource, spec: Any) -> Respons
         today=today,
         views=resource.switchable_views(),
         current_view=spec.name,
+        search_term=view.param("q"),
     )
 
 
@@ -529,6 +646,7 @@ async def _render_chart(view: View, resource: Resource, spec: Any) -> Response:
             measures=(spec.measure,),
             filter=user_filter,
             scope=scope,
+            sort=spec.sort,
             limit=spec.limit,
         )
     else:
@@ -765,6 +883,14 @@ async def _render_gantt(view: View, resource: Resource, spec: Any) -> Response:
     window_end = _advance(window_start, scale, span)
     total_days = max((window_end - window_start).days, 1)
 
+    # Both ends read in the reader's zone, for the reason in `_event_day`: a
+    # shift that ends at 23:00 UTC ends the next morning in Warsaw, and a bar
+    # that stopped a day early would be wrong on the one screen people read a
+    # schedule off. The window is bounded the same way, so the edges of it
+    # agree with the bars drawn inside.
+    starts = resource.get_field(spec.start_field)
+    ends = resource.get_field(spec.end_field)
+
     query = resource.build_query(
         view.identity,
         filter=and_(
@@ -772,8 +898,8 @@ async def _render_gantt(view: View, resource: Resource, spec: Any) -> Response:
             _quick_filter(view, resource),
             # Overlap, not containment: a bar that starts before the window and
             # ends inside it belongs on screen, and so does its mirror image.
-            Condition(spec.start_field, Op.LT, window_end.isoformat()),
-            Condition(spec.end_field, Op.GTE, window_start.isoformat()),
+            Condition(spec.start_field, Op.LT, _day_bound(window_end, starts, view.timezone)),
+            Condition(spec.end_field, Op.GTE, _day_bound(window_start, ends, view.timezone)),
         ),
         search=view.param("q") or None,
         sort=parse_sort(view.param("sort"), resource)
@@ -788,8 +914,8 @@ async def _render_gantt(view: View, resource: Resource, spec: Any) -> Response:
 
     bars = []
     for record in records:
-        start = clock.parse_date(record.get(spec.start_field))
-        end = clock.parse_date(record.get(spec.end_field))
+        start = _event_day(record.get(spec.start_field), starts, view.timezone)
+        end = _event_day(record.get(spec.end_field), ends, view.timezone)
         if start is None or end is None:
             continue
         # Clip to the window rather than dropping: a bar running past the edge
@@ -811,11 +937,16 @@ async def _render_gantt(view: View, resource: Resource, spec: Any) -> Response:
             }
         )
 
+    colours = _colour_classes(
+        resource, spec.color_field, [r.get(spec.color_field) for r in records], view
+    )
+
     return view.render_view(
         resource,
         "gantt",
         spec=spec,
         bars=bars,
+        colours=colours,
         groups=_gantt_groups(resource, spec, bars, view),
         columns=_gantt_columns(window_start, scale, span),
         scale=scale,
@@ -855,10 +986,20 @@ def _gantt_groups(
     for bar in bars:
         bands.setdefault(bar["record"].get(spec.group_by), []).append(bar)
     return [
-        {"label": labels.get(value, value if value is not None else "None"),
+        {"label": labels.get(value, _band_label(rows[0]["record"], spec.group_by, value)),
          "value": value, "bars": rows}
         for value, rows in bands.items()
     ]
+
+
+def _band_label(record: Record, field_name: str, value: Any) -> Any:
+    """What to call a band whose field declares no choices to name it.
+
+    A relation is the case that matters: grouping shifts by job would otherwise
+    head each band with a job number, and the title was already fetched for the
+    bars inside it.
+    """
+    return record.get(f"{field_name}_label") or (value if value is not None else "None")
 
 
 # -- map -------------------------------------------------------------------
@@ -905,9 +1046,9 @@ async def _render_map(view: View, resource: Resource, spec: Any) -> Response:
                 "lat": point[0],
                 "lon": point[1],
                 "title": (
-                    str(title_field.to_display(title_field.extract(record)))
+                    str(title_field.to_display(title_field.extract(record, view.ctx)))
                     if title_field is not None
-                    else resource.display_value(record)
+                    else resource.display_value(record, view.ctx)
                 ),
                 "subtitle": str(record.get(spec.subtitle_field) or "")
                 if spec.subtitle_field
@@ -1201,7 +1342,7 @@ async def export_csv(resource_name: str, view: View = Depends(build_view)) -> Re
             if not page.items:
                 break
             for record in page.items:
-                writer.writerow([_csv_value(f, record) for f in fields])
+                writer.writerow([_csv_value(f, record, view.ctx) for f in fields])
             yield _drain(buffer)
             if not page.has_next:
                 break
@@ -1239,11 +1380,34 @@ async def show_record(resource_name: str, pk: str, view: View = Depends(build_vi
         spec=spec,
         record=record,
         related=related,
-        title=resource.display_value(record),
+        title=_detail_title(resource, spec, record, view.ctx),
         actions=resource.actions_for("detail", record, view.identity),
         can_update=resource.can("update", view.identity, record),
         can_delete=resource.can("delete", view.identity, record),
     )
+
+
+def _detail_title(
+    resource: Resource, spec: Any, record: Record, ctx: Ctx | None = None
+) -> str:
+    """What heads the page.
+
+    ``display_field`` is what a *link* to this record says, and the two are not
+    always the same thing: a shift is linked to by its number, which is what a
+    row elsewhere is pointing at, but a page headed "3601" tells the reader
+    nothing about the shift they opened. A detail view naming a ``title_field``
+    gets that instead -- and for shifts it is the day and the window, which is
+    the one thing a screen about an appointment has to say.
+
+    Falls back rather than failing: a view may name a field a policy hides from
+    this caller, and a heading is not worth a 500.
+    """
+    field = resource.get_field(spec.title_field) if spec.title_field else None
+    if field is not None:
+        value = field.to_display(field.extract(record, ctx))
+        if value not in (None, ""):
+            return str(value)
+    return resource.display_value(record, ctx)
 
 
 async def _load(view: View, resource: Resource, pk: str) -> Record:
@@ -1292,6 +1456,10 @@ async def _load_related(view: View, resource: Resource, record: Record) -> dict[
         query = target.build_query(
             view.identity,
             filter=Condition(backref.via, Op.EQ, record.pk),
+            # The backref's own order when it declares one; the target's
+            # default otherwise. Which reading order is right depends on the
+            # record you arrived from, and only the backref knows that.
+            sort=[Sort.parse(s) for s in backref.order],
             page_size=backref.limit,
         )
         page = await target.provider.list(query, view.ctx)
@@ -1306,8 +1474,48 @@ async def _load_related(view: View, resource: Resource, record: Record) -> dict[
             "columns": backref.columns or tuple(
                 f.name for f in target.fields if f.in_list
             )[:4],
+            # Only asked when the backref opted in, and asked without a record
+            # so it answers "is there a column to draw at all" -- whether any
+            # particular row offers a given button is settled per row.
+            "row_actions": bool(
+                backref.actions and target.actions_for("row", None, view.identity)
+            ),
         }
+        if backref.tree:
+            related[backref.name].update(
+                await _related_tree(view, target, backref, page.items)
+            )
     return related
+
+
+async def _related_tree(
+    view: View, target: Resource, backref: Any, records: Sequence[Record]
+) -> dict[str, Any]:
+    """The expander state for a backref drawn as a tree rather than a table.
+
+    Only the roots are prepared here. Every branch below them is fetched by the
+    row that opens it, through the target resource's own ``/children``
+    fragment -- the same one its full-page tree uses -- so an embedded tree
+    costs one extra count query and nothing else until somebody clicks.
+    """
+    spec: Any = target.view(backref.tree)
+    if spec.kind != "tree":
+        raise RegistryError(
+            f"{backref.name!r} asks for tree view {backref.tree!r} on "
+            f"{target.name!r}, which is a {spec.kind} view."
+        )
+    child = _tree_child_resource(view, target, spec)
+    if not child.policy.allows("read", view.identity):
+        # Nothing to hang underneath, so it reads as the flat list it now is.
+        return {}
+    return {
+        "tree": spec,
+        # The roots are `target`'s rows; the counts behind their expanders come
+        # from the child resource, which is what decides whether a row has
+        # anything to open.
+        "nodes": await _tree_nodes(view, child, spec, records, 0),
+        "tree_columns": _visible_columns(target, spec, view),
+    }
 
 
 @router.get("/{resource_name}/{pk}/children")
@@ -2040,9 +2248,9 @@ def _drain(buffer) -> str:
     return value
 
 
-def _csv_value(field: Any, record: Record) -> str:
+def _csv_value(field: Any, record: Record, ctx: Ctx | None = None) -> str:
     """Render a value for a spreadsheet: plain, unformatted, no markup."""
-    value = field.to_display(field.extract(record))
+    value = field.to_display(field.extract(record, ctx))
     if value is None:
         return ""
     if isinstance(value, (list, tuple)):

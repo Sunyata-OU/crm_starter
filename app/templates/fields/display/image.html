@@ -1,6 +1,19 @@
+{#
+  A stored image, served through this application's file route.
+
+  The `?store=` is the field's own store, so an image kept somewhere other than
+  the default -- another system's bucket, attached read-only -- resolves to the
+  store that actually holds it rather than 404ing against the default one.
+
+  Larger on a detail page than in a table cell: a 32px thumbnail is an
+  identifier in a list and useless as a photograph.
+#}
 {%- set info = value|file_info -%}
+{%- set store = field.options.get('store', '') -%}
 {% if info.key %}
-  <a href="/files/{{ info.key }}" class="image-link" title="{{ info.filename }}">
-    <img class="thumb" src="/files/{{ info.key }}" alt="{{ info.filename }}" loading="lazy">
+  {%- set src = '/files/' ~ info.key ~ ('?store=' ~ store if store else '') -%}
+  <a href="{{ src }}" class="image-link" title="{{ info.filename }}">
+    <img class="thumb {{ 'thumb-lg' if full }}" src="{{ src }}"
+         alt="{{ info.filename }}" loading="lazy">
   </a>
 {% else %}{{ ''|blank }}{% endif %}

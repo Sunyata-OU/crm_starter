@@ -1,1 +1,2 @@
-{% if value %}<code class="json-preview">{{ value|string|truncate_chars(60) }}</code>{% else %}{{ ''|blank }}{% endif %}
+{% if value and full %}<pre class="json-preview json-full">{{ value|string }}</pre>
+{% elif value %}<code class="json-preview">{{ value|string|truncate_chars(60) }}</code>{% else %}{{ ''|blank }}{% endif %}

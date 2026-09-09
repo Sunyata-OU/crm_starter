@@ -1,12 +1,15 @@
 {% extends layout|default("base.html") %}
 {% block title %}{{ resource.label_plural }}{% endblock %}
-{% block heading %}{{ resource.label_plural }}{% endblock %}
+{% block heading %}{{ resource.label_plural }} · {{ spec.label }}{% endblock %}
 
 {% block content %}
   {% if not panel %}{% include "views/_toolbar.html" %}{% endif %}
 
   {# Titles go through the field like every other view: a computed one has
-     nothing stored under its key, and a stored one is formatted its own way. #}
+     nothing stored under its key, and a stored one is formatted its own way.
+     A relation is the exception worth handling here -- what it stores is a
+     key, and the name behind it was fetched for this page and stamped on as
+     `<field>_label`. #}
   {% set title_field = resource.get_field(spec.title_field) %}
 
   {# Navigation is by anchor date, so one set of links serves every scale.
@@ -55,10 +58,20 @@
                 {% else %}{{ day.day }}{% endif %}
               </div>
               {% for record in events[:cell_events] %}
-                {% set title = title_field.to_display(title_field.extract(record))
-                               if title_field else record.get(spec.title_field) %}
-                <a class="cal-event" href="/r/{{ resource.name }}/{{ record.pk }}"
-                   title="{{ title }}">
+                {% set label = record.get(spec.title_field ~ '_label') %}
+                {% set title = label
+                               or (title_field.to_display(title_field.extract(record, render_ctx))
+                                   if title_field else record.get(spec.title_field)) %}
+                {# The clock times are the view's own business rather than the
+                   title's: they are two columns this grid already knows about,
+                   and rendering them here is what puts them in the reader's
+                   zone instead of the database's. #}
+                {% set opens = record.get(spec.start_field)|time if not spec.all_day else '' %}
+                {% set closes = record.get(spec.end_field)|time if spec.end_field and not spec.all_day else '' %}
+                <a class="cal-event {{ colours.get(record.get(spec.color_field), '') }}"
+                   href="/r/{{ resource.name }}/{{ record.pk }}"
+                   title="{{ (opens ~ ('–' ~ closes if closes else '') ~ ' ')|trim }}{{ title }}">
+                  {% if opens %}<span class="cal-time">{{ opens }}</span>{% endif %}
                   {{ title|string|truncate_chars(22 if scale == 'month' else 60) }}
                 </a>
               {% endfor %}

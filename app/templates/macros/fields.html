@@ -12,9 +12,14 @@
   these macros or the table that calls them.
 #}
 
-{% macro display(resource, field, record, templates) %}
+{#
+  `full` says the value has room: a detail page shows the whole of a long text
+  where a table cell shows the first line of it. Passed to the partial, which
+  is the only place that knows whether its type has anything to shorten.
+#}
+{% macro display(resource, field, record, templates, full=false) %}
   {%- set partial = templates.field_template(resource.name, field, 'display') -%}
-  {%- set value = field.to_display(field.extract(record)) -%}
+  {%- set value = field.to_display(field.extract(record, render_ctx)) -%}
   {% include partial %}
 {% endmacro %}
 

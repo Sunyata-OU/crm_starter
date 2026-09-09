@@ -469,7 +469,7 @@ class TestRelationLabelBatching:
                 return filter
 
             @staticmethod
-            def display_value(record):
+            def display_value(record, ctx=None):
                 return f"company {record.pk}"
 
             class provider:

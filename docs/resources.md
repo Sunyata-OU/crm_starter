@@ -49,9 +49,41 @@ TextField(
 | Boolean | `boolean` |
 | Temporal | `date` `datetime` `time` |
 | Choice | `select` `status` `multiselect` `tags` |
-| Structured | `json` `color` `file` `image` |
+| Structured | `json` `color` `file` `image` `rows` |
 | Relational | `relation` `backref` |
-| Derived | `computed` |
+| Derived | `computed` `case` |
+
+`computed` is a value produced from the record rather than read from it. Its
+callable is given the record, and — if it declares a second parameter — the
+request context with it, which is how a computed label says an instant in the
+reader's own hours rather than in UTC:
+
+```python
+TextField("when", compute=lambda record, ctx: to_zone(
+    record["starts_at"], ctx.identity.timezone).strftime("%d %b %H:%M"))
+```
+
+The signature is the request: a one-argument compute keeps working untouched,
+and a compute that asks for the context but is called without one (from the
+CLI, or a background job) falls back to UTC rather than refusing to render.
+
+`case` is a column that does not exist, expressed in terms of ones that do:
+ordered branches, first match wins, compiled into the query as a `CASE`. Use it
+for the value a screen is really organised by when no column holds it — a job's
+lifecycle, a customer's tier. Because it is in the query rather than in Python,
+a list can sort, group and paginate by it. Declare `order=` when the order the
+branches must be *matched* in differs from the order they should be *read* in.
+
+A `ListView(group_by=...)` sorts by that field first and draws a header row each
+time its value changes, so a grouped list stays one query and still pages.
+
+`rows` is a grid: several records entered at once, each cell the ordinary input
+for its column, submitted as parallel arrays (`rows.email` repeated once per
+row). Use it as an action's `prompt_field` when the subject of the action is a
+*set* of new things. Its input offers a "fill from CSV" picker, but the file is
+read in the browser and never uploaded — what is submitted is always the grid,
+so every cell goes through the same validation as a single-record form.
+
 
 `status` renders as a coloured pill and can group a board. `relation` renders
 as a link with a typeahead input. `backref` is the many side — not stored,
@@ -61,7 +93,30 @@ resolved by querying the other resource, shown as an embedded list.
 RelationField("company_id", resource="companies", display="name")
 BackrefField("contacts", resource="contacts", via="company_id",
              columns=("name", "email"))
+BackrefField("bookings", resource="bookings", via="venue_id",
+             order=("-starts_at",))
 ```
+
+```python
+BackrefField("shifts", resource="shifts", via="job_id",
+             actions=True, tree="by_week")
+```
+
+`actions=True` offers the target's own row actions on each embedded row, so
+somebody can be taken off a shift from the shift they are on rather than from
+the assignment's page; running one returns to the screen the button was pressed
+on. It is off by default, because an embedded list is usually context and a
+screen should not grow buttons because another resource gained an action.
+
+`tree=` names a tree view on the target: the embedded rows are drawn with that
+view's expanders and open through the target's own `/children` fragment, so a
+person's jobs can carry their shifts underneath without this screen knowing
+anything about shifts.
+
+`order=` is the order the embedded rows read in; without it they take the
+target's own default. Which one is right depends on the record you arrived
+from — a booking list is a booking list, a *venue's* bookings are read latest
+first — and only the backref knows that.
 
 Because a relation is resolved by a query rather than a join, the two resources
 may live in entirely different backends.
@@ -99,9 +154,22 @@ BoardView(group_by="stage", card=Card(title="name", badges=["amount"]),
 # A day, week, fortnight or month grid. The scale is a request parameter
 # (`?scale=week&at=2026-09-03`), so `default_scale` only says where readers
 # land -- two people can read the same calendar at different widths.
+# `end_field` and `all_day=False` make the block a span with its clock times
+# printed in the reader's zone; `color_field` tints it -- by the field's own
+# choice colours where it has them, and by a stable hash of the value where it
+# does not, which is how "the same job is the same colour" works for a field
+# with as many values as there are jobs.
 CalendarView(start_field="due_on", title_field="subject", default_scale="month")
+CalendarView(start_field="start_time", end_field="end_time", all_day=False,
+             title_field="job_id", color_field="job_id", default_scale="week")
 
 ChartView(group_by="stage", measure=Measure(Agg.SUM, "amount"), chart="column")
+
+# A series rather than a ranking. `sort=` orders the groups by their own value
+# and turns off ordering by the measure, because the two cannot both win: a
+# chart read left to right has to be chronological.
+ChartView(group_by="month", measure=Measure(Agg.SUM, "amount"),
+          chart="line", sort=("month",))
 
 PivotView(rows=("owner",), columns=("stage",),
           measures=(Measure(Agg.SUM, "amount"),))
@@ -130,6 +198,11 @@ ActivityView(row_field="owner", activity_field="kind", due_field="due_on",
 DashboardView(panels=[
     Panel(view="chart", span=1),
     Panel(view="activity", resource="activities", span=2),
+    # A panel may be a *filtered* view -- one work queue rather than the whole
+    # table. Anything the list route reads works, because it is the list route:
+    # `quick`, an `f.<field>` filter, a sort.
+    Panel(view="list", title="Unassigned",
+          params={"f.owner": "", "sort": "-created_at"}),
 ], columns=2)
 ```
 

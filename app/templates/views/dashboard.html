@@ -30,10 +30,15 @@
       <section class="dash-panel" style="--dash-span: {{ entry.panel.span }}">
         <header class="dash-panel-head">
           <h2>{{ entry.title }}</h2>
-          <a class="link" href="/r/{{ entry.resource.name }}?view={{ entry.panel.view }}">Open</a>
+          <a class="link" href="{{ entry.url|replace('&panel=1', '') }}">Open</a>
         </header>
+        {# `revealed` rather than `load`: a dashboard's panels are each a real
+           query, and firing all of them at once puts a burst on a database
+           this application shares with the live services. Panels above the
+           fold are revealed immediately, so nothing waits for a scroll that
+           was not needed. #}
         <div class="dash-panel-body" {% if entry.panel.height %}style="height: {{ entry.panel.height }}"{% endif %}
-             hx-get="{{ entry.url }}" hx-trigger="load" hx-swap="innerHTML">
+             hx-get="{{ entry.url }}" hx-trigger="revealed once" hx-swap="innerHTML">
           <p class="muted">Loading {{ entry.resource.label_plural|lower }}…</p>
         </div>
       </section>

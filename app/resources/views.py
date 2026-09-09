@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any, Literal, Self
+from urllib.parse import quote
 
 from app.core.query import Agg, Measure, Sort
 
@@ -407,6 +408,12 @@ class ChartView(View):
         chart: Literal["bar", "column", "line", "donut"] = "column",
         series_by: str = "",
         sort_by_value: bool = True,
+        #: Order the groups by their own value rather than by the measure.
+        #: A chart over time needs this: "the biggest month first" is a
+        #: ranking, and a series read left to right has to be chronological or
+        #: it is not a series. Setting it turns `sort_by_value` off, because
+        #: the two orderings cannot both win.
+        sort: Sequence[Sort | str] = (),
         limit: int = 25,
     ) -> None:
         super().__init__(name=name, label=label, icon=icon)
@@ -415,7 +422,8 @@ class ChartView(View):
         self.chart = chart
         #: Optional second grouping, drawn as separate series.
         self.series_by = series_by
-        self.sort_by_value = sort_by_value
+        self.sort = tuple(s if isinstance(s, Sort) else Sort.parse(s) for s in sort)
+        self.sort_by_value = sort_by_value and not self.sort
         self.limit = limit
 
     @property
@@ -745,9 +753,17 @@ class Panel:
     #: Grid columns this panel occupies.
     span: int = 1
     height: str = ""
+    #: Extra query parameters, so a panel can be a *filtered* view -- one work
+    #: queue rather than the whole table. Anything the list route reads works:
+    #: ``quick``, a ``f.<field>`` filter, a sort.
+    params: Mapping[str, str] = dc_field(default_factory=dict)
 
     def url(self, default_resource: str) -> str:
-        return f"/r/{self.resource or default_resource}?view={self.view}&panel=1"
+        extra = "".join(
+            f"&{quote(str(key))}={quote(str(value))}"
+            for key, value in self.params.items()
+        )
+        return f"/r/{self.resource or default_resource}?view={self.view}&panel=1{extra}"
 
 
 class DashboardView(View):

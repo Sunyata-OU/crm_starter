@@ -329,11 +329,42 @@ td.is-pending { background: var(--info-soft); }
   display: inline-block; padding: .1rem .5rem; border-radius: 99px;
   font-size: .76rem; font-weight: 600; background: var(--surface-alt); color: var(--text-muted);
 }
-.pill-green  { background: var(--success-soft); color: var(--success); }
-.pill-red    { background: var(--danger-soft);  color: var(--danger); }
-.pill-amber  { background: var(--warning-soft); color: var(--warning); }
-.pill-blue   { background: var(--info-soft);    color: var(--info); }
-.pill-accent { background: var(--accent-soft);  color: var(--accent); }
+/*
+  A colour class publishes its pair as `--tone-bg` / `--tone-ink` as well as
+  wearing it. Anything that wants to be tinted -- a calendar block, a Gantt bar
+  -- then reads those with its own default as the fallback, and does not care
+  whether this file happens to define the tone above it or below it.
+*/
+.pill-green  { --tone-bg: var(--success-soft); --tone-ink: var(--success); background: var(--tone-bg); color: var(--tone-ink); }
+.pill-red    { --tone-bg: var(--danger-soft);  --tone-ink: var(--danger);  background: var(--tone-bg); color: var(--tone-ink); }
+.pill-amber  { --tone-bg: var(--warning-soft); --tone-ink: var(--warning); background: var(--tone-bg); color: var(--tone-ink); }
+.pill-blue   { --tone-bg: var(--info-soft);    --tone-ink: var(--info);    background: var(--tone-bg); color: var(--tone-ink); }
+.pill-accent { --tone-bg: var(--accent-soft);  --tone-ink: var(--accent);  background: var(--tone-bg); color: var(--tone-ink); }
+
+/*
+  Categorical hues, for values that have no colour of their own: which job a
+  shift belongs to, say. A status is coloured by what it means and uses the
+  pills above; these mean nothing beyond "same colour, same thing", so they are
+  spread evenly round the wheel and kept at one lightness so no block shouts
+  louder than its neighbours.
+*/
+.hue-1 { --tone-bg: hsl(212 72% 93%); --tone-ink: hsl(212 62% 32%); background: var(--tone-bg); color: var(--tone-ink); }
+.hue-2 { --tone-bg: hsl(150 55% 90%); --tone-ink: hsl(150 55% 26%); background: var(--tone-bg); color: var(--tone-ink); }
+.hue-3 { --tone-bg: hsl(276 60% 93%); --tone-ink: hsl(276 45% 38%); background: var(--tone-bg); color: var(--tone-ink); }
+.hue-4 { --tone-bg: hsl(28 85% 91%); --tone-ink: hsl(28 70% 32%); background: var(--tone-bg); color: var(--tone-ink); }
+.hue-5 { --tone-bg: hsl(340 70% 94%); --tone-ink: hsl(340 55% 38%); background: var(--tone-bg); color: var(--tone-ink); }
+.hue-6 { --tone-bg: hsl(190 60% 91%); --tone-ink: hsl(190 60% 27%); background: var(--tone-bg); color: var(--tone-ink); }
+.hue-7 { --tone-bg: hsl(95 50% 90%); --tone-ink: hsl(95 50% 26%); background: var(--tone-bg); color: var(--tone-ink); }
+.hue-8 { --tone-bg: hsl(50 75% 88%); --tone-ink: hsl(45 65% 27%); background: var(--tone-bg); color: var(--tone-ink); }
+
+[data-theme="dark"] .hue-1 { --tone-bg: hsl(212 40% 22%); --tone-ink: hsl(212 75% 80%); background: var(--tone-bg); color: var(--tone-ink); }
+[data-theme="dark"] .hue-2 { --tone-bg: hsl(150 35% 19%); --tone-ink: hsl(150 60% 76%); background: var(--tone-bg); color: var(--tone-ink); }
+[data-theme="dark"] .hue-3 { --tone-bg: hsl(276 32% 24%); --tone-ink: hsl(276 65% 84%); background: var(--tone-bg); color: var(--tone-ink); }
+[data-theme="dark"] .hue-4 { --tone-bg: hsl(28 45% 21%); --tone-ink: hsl(28 80% 78%); background: var(--tone-bg); color: var(--tone-ink); }
+[data-theme="dark"] .hue-5 { --tone-bg: hsl(340 38% 23%); --tone-ink: hsl(340 75% 84%); background: var(--tone-bg); color: var(--tone-ink); }
+[data-theme="dark"] .hue-6 { --tone-bg: hsl(190 40% 20%); --tone-ink: hsl(190 65% 78%); background: var(--tone-bg); color: var(--tone-ink); }
+[data-theme="dark"] .hue-7 { --tone-bg: hsl(95 30% 19%); --tone-ink: hsl(95 55% 76%); background: var(--tone-bg); color: var(--tone-ink); }
+[data-theme="dark"] .hue-8 { --tone-bg: hsl(50 40% 20%); --tone-ink: hsl(50 70% 76%); background: var(--tone-bg); color: var(--tone-ink); }
 
 .badge {
   display: inline-block; padding: .05rem .4rem; border-radius: var(--radius-sm);
@@ -350,6 +381,11 @@ td.is-pending { background: var(--info-soft); }
 .thumb-lg { width: 88px; height: 88px; }
 .json-preview { background: var(--surface-alt); padding: .1rem .3rem; border-radius: 3px; }
 .text-block { display: inline-block; max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+/* The same value where there is room for it: a detail page, which is the
+   screen somebody opened to read the whole description rather than the first
+   line of it. Line breaks as typed. */
+.text-block.text-full { display: block; max-width: 68ch; overflow: visible; white-space: pre-wrap; overflow-wrap: break-word; }
+.json-preview.json-full { display: block; max-width: 100%; overflow-x: auto; white-space: pre-wrap; }
 
 .percent { display: inline-flex; align-items: center; gap: .4rem; }
 .percent-bar {
@@ -466,8 +502,9 @@ textarea.input { resize: vertical; }
 .cal-day.other-month { background: var(--surface-alt); opacity: .55; }
 .cal-day.today { box-shadow: inset 0 0 0 2px var(--accent); }
 .cal-date { font-size: .78rem; color: var(--text-muted); margin-bottom: .2rem; font-variant-numeric: tabular-nums; }
-.cal-event { display: block; font-size: .75rem; padding: .1rem .3rem; margin-bottom: .15rem; border-radius: 3px; background: var(--accent-soft); color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-event { display: block; font-size: .75rem; padding: .1rem .3rem; margin-bottom: .15rem; border-radius: 3px; background: var(--tone-bg, var(--accent-soft)); color: var(--tone-ink, var(--accent)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cal-event:hover { text-decoration: none; filter: brightness(.95); }
+.cal-time { font-variant-numeric: tabular-nums; font-weight: 600; margin-right: .25rem; opacity: .85; }
 .cal-more { font-size: .7rem; color: var(--text-muted); }
 .calendar-scales { display: inline-flex; gap: .25rem; margin-left: auto; }
 .calendar-scales .active { background: var(--accent-soft); border-color: var(--accent); }
@@ -822,7 +859,7 @@ body.htmx-request::after {
 .gantt { min-width: 44rem; }
 .gantt-head, .gantt-row, .gantt-band { display: flex; align-items: stretch; }
 .gantt-label-col {
-  flex: 0 0 14rem; min-width: 0; padding: .35rem .6rem;
+  flex: 0 0 18rem; min-width: 0; padding: .35rem .6rem;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   border-right: 1px solid var(--border);
 }
@@ -839,9 +876,9 @@ body.htmx-request::after {
 .gantt-today { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--danger); opacity: .55; }
 .gantt-bar {
   position: absolute; top: .3rem; height: 1.3rem; display: block;
-  background: var(--accent-soft); border: 1px solid var(--accent);
+  background: var(--tone-bg, var(--accent-soft)); border: 1px solid var(--tone-ink, var(--accent));
   border-radius: var(--radius-sm); overflow: hidden; text-decoration: none;
-  color: var(--text); font-size: .75rem; line-height: 1.25rem;
+  color: var(--tone-ink, var(--text)); font-size: .75rem; line-height: 1.25rem;
 }
 .gantt-bar:hover { filter: brightness(.97); }
 .gantt-bar.clipped-start { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-style: dashed; }

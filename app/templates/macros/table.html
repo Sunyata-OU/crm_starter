@@ -78,7 +78,31 @@
       </tr>
     </thead>
     <tbody>
+      {#
+        Grouping is a header row emitted when the value changes, not a nested
+        structure: the rows arrive already ordered by the group (the route
+        sorts by it first), so the only state needed is the previous value.
+        That keeps a grouped list one query and one pass, and keeps paging
+        working -- a group simply continues onto the next page, with its header
+        repeated so the page still reads on its own.
+      #}
+      {% set ns = namespace(group=none, first=true) %}
       {% for record in page.items %}
+        {% if spec.group_by %}
+          {% set gfield = resource.field(spec.group_by) %}
+          {% set gvalue = gfield.extract(record, render_ctx) %}
+          {% if ns.first or gvalue != ns.group %}
+            {% set ns.group = gvalue %}
+            <tr class="group-row">
+              <th class="group-head"
+                  colspan="{{ columns|length + (1 if spec.bulk_actions else 0) + (1 if spec.row_actions else 0) }}"
+                  scope="colgroup">
+                {{ f.display(resource, gfield, record, templates) }}
+              </th>
+            </tr>
+          {% endif %}
+          {% set ns.first = false %}
+        {% endif %}
         <tr data-pk="{{ record.pk }}">
           {% if spec.bulk_actions %}
             <td class="col-select" data-label="Select">

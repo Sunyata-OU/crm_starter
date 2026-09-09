@@ -8,7 +8,8 @@ looks at what the chip actually says will catch it.
 
 from __future__ import annotations
 
-from datetime import date
+import re
+from datetime import date, datetime
 
 import pytest
 from starlette.testclient import TestClient
@@ -115,6 +116,162 @@ class TestSearchWithAComputedDisplayField:
         assert response.status_code == 200
 
 
+class TestACalendarOfInstants:
+    """The other kind of calendar: blocks of time rather than dated rows.
+
+    A shift is stored in UTC and read by somebody in Warsaw or Tallinn, which
+    makes three things the grid has to get right: which day a block lands on,
+    what clock time is printed inside it, and whether the chips above it have
+    any effect on what is drawn at all.
+    """
+
+    ROWS = [
+        # Late on the 3rd in UTC, which is already the 4th anywhere in Europe.
+        {"id": 1, "job": "Bartender", "status": "PENDING",
+         "start": datetime(2026, 9, 3, 23, 30), "end": datetime(2026, 9, 4, 6, 0)},
+        {"id": 2, "job": "Bartender", "status": "CONFIRMED",
+         "start": datetime(2026, 9, 10, 9, 0), "end": datetime(2026, 9, 10, 17, 0)},
+        {"id": 3, "job": "Cleaner", "status": "CANCELLED",
+         "start": datetime(2026, 9, 10, 12, 0), "end": datetime(2026, 9, 10, 20, 0)},
+    ]
+
+    @pytest.fixture
+    def client(self, settings):
+        from app.core.query import Condition, Op
+        from app.fields.types import DateTimeField, SelectField
+        from app.resources.views import QuickFilter, SearchSpec
+
+        registry = build_registry()
+        registry.add_resource(
+            Resource(
+                "blocks",
+                provider=MemoryProvider(self.ROWS),
+                display_field="job",
+                fields=[
+                    TextField("id", in_form=False),
+                    TextField("job"),
+                    SelectField("status", choices=[
+                        ("PENDING", "Pending", "amber"),
+                        ("CONFIRMED", "Confirmed", "green"),
+                        ("CANCELLED", "Cancelled", "red"),
+                    ], in_filter=True),
+                    DateTimeField("start", absolute=True),
+                    DateTimeField("end", absolute=True),
+                ],
+                search=SearchSpec(quick_filters=[
+                    QuickFilter("cancelled", "Cancelled",
+                                build=lambda identity: Condition("status", Op.EQ, "CANCELLED")),
+                ]),
+                views=[CalendarView(start_field="start", end_field="end",
+                                    title_field="job", color_field="job",
+                                    all_day=False, default_scale="month")],
+            )
+        )
+        with TestClient(create_app(settings=settings, registry=registry)) as c:
+            sign_in(c, email="admin@example.com", roles=["admin"],
+                    timezone="Europe/Warsaw")
+            yield c
+
+    def page(self, client, **params) -> str:
+        query = "&".join(f"{k}={v}" for k, v in params.items())
+        return client.get(f"/r/blocks?view=calendar&{query}").text
+
+    def cell(self, html: str, day: int) -> str:
+        """The markup of one day cell, so an assertion cannot match its neighbour."""
+        cells = html.split('<td class="cal-day')
+        for chunk in cells[1:]:
+            date_line = chunk.split("</div>", 1)[0]
+            if f">{day}</a>" in date_line or f">{day}<" in date_line.split("cal-date")[-1]:
+                return chunk
+        raise AssertionError(f"no cell for day {day}")
+
+    def test_a_late_shift_is_placed_on_the_day_it_starts_where_the_reader_is(self, client):
+        """23:30 UTC on the 3rd is half past midnight on the 4th in Warsaw."""
+        html = self.page(client, year=2026, month=9)
+        assert "Bartender" in self.cell(html, 4)
+        assert "Bartender" not in self.cell(html, 3)
+
+    def test_the_clock_time_in_the_block_is_the_readers_own(self, client):
+        html = self.page(client, year=2026, month=9)
+        assert "01:30" in self.cell(html, 4), "Warsaw is two hours ahead in September"
+        assert "23:30" not in html, "which is the stored value, not a readable one"
+
+    def test_two_shifts_on_the_same_job_share_a_colour(self, client):
+        html = self.page(client, year=2026, month=9)
+        tones = re.findall(r'class="cal-event (hue-\d+)"', html)
+        assert len(tones) == 3
+        assert tones[0] == tones[1], "the same job, twice"
+        assert tones[2] != tones[0], "a different job"
+
+    def test_a_quick_filter_narrows_the_grid(self, client):
+        """The chips are drawn above this view, so they have to act on it."""
+        html = self.page(client, year=2026, month=9, quick="cancelled")
+        assert "Cleaner" in html
+        assert "Bartender" not in html
+
+    def test_a_filter_narrows_it_too(self, client):
+        html = self.page(client, year=2026, month=9, **{"f.status": "CONFIRMED"})
+        assert "Cleaner" not in html
+
+    def test_a_week_is_seven_cells_and_the_month_around_it_is_not_drawn(self, client):
+        html = self.page(client, scale="week", at="2026-09-10")
+        assert html.count('<td class="cal-day') == 7
+        assert "Bartender" in html and "Cleaner" in html
+        # Both ends of a block are the reader's: 09:00-17:00 UTC read in Warsaw.
+        assert "11:00" in html and "19:00" in html
+
+    def test_the_scale_the_view_declares_is_what_it_opens_on(self, settings):
+        from app.fields.types import DateTimeField
+
+        registry = build_registry()
+        registry.add_resource(
+            Resource(
+                "weekly",
+                provider=MemoryProvider(self.ROWS),
+                display_field="job",
+                fields=[TextField("id", in_form=False), TextField("job"),
+                        DateTimeField("start", absolute=True)],
+                views=[CalendarView(start_field="start", title_field="job",
+                                    default_scale="week")],
+            )
+        )
+        with TestClient(create_app(settings=settings, registry=registry)) as c:
+            sign_in(c, email="admin@example.com", roles=["admin"])
+            html = c.get("/r/weekly?view=calendar").text
+        assert html.count('<td class="cal-day') == 7
+
+
+class TestTheTitleOfARelation:
+    """A block naming a key is a block nobody can read. The label is fetched
+    for the page anyway -- resolving relations is what every other view does --
+    so the calendar uses it."""
+
+    @pytest.fixture
+    def client(self, settings):
+        from app.fields.types import DateTimeField, RelationField
+
+        registry = build_registry()
+        registry.add_resource(
+            Resource(
+                "engagements",
+                provider=MemoryProvider([
+                    {"id": 1, "company_id": "1", "start": datetime(2026, 9, 8, 9, 0)},
+                ]),
+                fields=[
+                    TextField("id", in_form=False),
+                    RelationField("company_id", resource="companies", display="name"),
+                    DateTimeField("start", absolute=True),
+                ],
+                views=[CalendarView(start_field="start", title_field="company_id")],
+            )
+        )
+        with TestClient(create_app(settings=settings, registry=registry)) as c:
+            sign_in(c, email="admin@example.com", roles=["admin"])
+            yield c
+
+    def test_the_block_is_named_by_the_row_it_points_at(self, client):
+        html = client.get("/r/engagements?view=calendar&year=2026&month=9").text
+        assert "Analytical Engines" in html
 class TestTheCalendarScale:
     """A day, a week and a fortnight are the month grid seen through a
     narrower window. What is worth testing is the window, not the table: which

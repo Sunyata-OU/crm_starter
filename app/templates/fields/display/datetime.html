@@ -1,1 +1,8 @@
-{% if value %}<time datetime="{{ value }}" title="{{ value|datetime }}">{{ value|ago }}</time>{% else %}{{ ''|blank }}{% endif %}
+{#
+  An instant. "3 hours ago" is the better reading for a record's history, and
+  the worse one for anything scheduled: "in 2 months" does not tell a
+  coordinator which day a shift starts. Fields that are appointments rather
+  than timestamps declare `absolute=True` and swap the two -- the clock time
+  is the label and the distance moves into the tooltip.
+#}
+{% if value %}{% if field.options.get('absolute') %}<time datetime="{{ value }}" title="{{ value|ago }}">{{ value|datetime }}</time>{% else %}<time datetime="{{ value }}" title="{{ value|datetime }}">{{ value|ago }}</time>{% endif %}{% else %}{{ ''|blank }}{% endif %}

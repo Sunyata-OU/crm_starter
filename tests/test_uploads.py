@@ -197,3 +197,60 @@ class TestServing:
         upload(client, attachment=("report.pdf", io.BytesIO(b"x"), "application/pdf"))
         key = next(iter(files.files))
         assert "private" in client.get(f"/files/{key}").headers["cache-control"]
+
+
+class TestAFieldMayNameItsOwnStore:
+    """A column populated by another system names the store that system's
+    files are in -- that system's own bucket, attached read-only, holding a
+    key like ``picture_profile_305.jpg``. Rendered against the default store
+    it 404s, which is what a profile photograph does.
+    """
+
+    @pytest.fixture
+    def stores(self):
+        default, elsewhere = MemoryFileStore(), MemoryFileStore()
+        elsewhere.files["picture_profile_305.jpg"] = PNG
+        file_stores.clear()
+        file_stores.bind("files", default)
+        file_stores.bind("files.other", elsewhere)
+        file_stores.default_name = "files"
+        yield elsewhere
+        file_stores.clear()
+
+    @pytest.fixture
+    def client(self, stores):
+        registry = Registry()
+        registry.add_resource(
+            Resource(
+                "people",
+                provider=MemoryProvider(
+                    [{"id": 1, "picture": "picture_profile_305.jpg"}]
+                ),
+                audited=False,
+                fields=[
+                    TextField("id", in_form=False),
+                    ImageField("picture", readonly=True, store="files.other"),
+                ],
+                views=[ListView(columns=[Column("id", link=True), "picture"])],
+            )
+        )
+        settings = Settings(secret_key="k" * 32, environment="test",
+                            template_reload=False, auth_providers=["session"],
+                            modules=[])
+        with TestClient(create_app(settings=settings, registry=registry),
+                        raise_server_exceptions=False) as c:
+            sign_in(c, email="admin@x.test", roles=["admin"])
+            yield c
+
+    def test_the_image_points_at_the_store_that_holds_it(self, client):
+        page = client.get("/r/people/1").text
+        assert "/files/picture_profile_305.jpg?store=files.other" in page
+
+    def test_and_that_url_serves_the_bytes(self, client):
+        response = client.get("/files/picture_profile_305.jpg?store=files.other")
+        assert response.status_code == 200 and response.content == PNG
+
+    def test_the_default_store_does_not_have_it(self, client):
+        """Which is the failure this replaces: the key was right and the store
+        was the wrong one."""
+        assert client.get("/files/picture_profile_305.jpg").status_code == 404

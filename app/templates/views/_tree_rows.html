@@ -26,7 +26,7 @@
     <td class="col-expand">
       {% if node.expandable %}
         <button type="button" class="tree-toggle" aria-expanded="false"
-                aria-label="Expand {{ resource.display_value(record) }}"
+                aria-label="Expand {{ resource.display_value(record, render_ctx) }}"
                 hx-get="/r/{{ resource.name }}/{{ record.pk }}/children?view={{ spec.name }}&depth={{ node.depth + 1 }}"
                 hx-target="#{{ row_id }}" hx-swap="afterend"
                 hx-trigger="click once"
