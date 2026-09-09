@@ -264,9 +264,13 @@ class Registry:
         # that quietly stopped applying against a memory provider would be
         # tested as working and deployed as not.
         if not isinstance(ref, str):
-            return ensure_full(
-                self._stamped(ref, resource), search_fields=resource.searchable_fields()
-            )
+            provider = self._stamped(ref, resource)
+            if resource.sequence:
+                from app.providers.sequence import SequencingProvider
+
+                column, prefix = resource.sequence
+                provider = SequencingProvider(provider, column=column, prefix=prefix)
+            return ensure_full(provider, search_fields=resource.searchable_fields())
 
         connection_name, _, target = ref.partition("#")
         connection_name = connection_name.strip()
@@ -302,6 +306,17 @@ class Registry:
         # Stamping sits below auditing, so the audit entry records the values
         # that were actually written rather than the ones submitted.
         provider = self._stamped(provider, resource)
+
+        # Sequencing likewise sits below auditing, and above stamping only
+        # because it needs no particular order relative to it -- the two
+        # touch different columns. It must run, so the audit entry (and
+        # anything that reads the record straight back) sees the reference
+        # that was actually assigned.
+        if resource.sequence:
+            from app.providers.sequence import SequencingProvider
+
+            column, prefix = resource.sequence
+            provider = SequencingProvider(provider, column=column, prefix=prefix)
 
         # Auditing wraps the backend but sits inside the shim: it must see the
         # real write, and it must not see reads the shim performs to emulate a

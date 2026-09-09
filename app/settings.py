@@ -167,6 +167,25 @@ class Settings(BaseSettings):
     #: honest, where picking somebody arbitrarily would not be.
     task_watchers: CsvList = []
 
+    # -- helpdesk -------------------------------------------------------
+    #: Who hears about a new ticket nobody is on, and one ageing past
+    #: `helpdesk_stale_hours` while assigned. Same reasoning as
+    #: `CRM_TASK_WATCHERS`: naming nobody means the sweep says nothing about
+    #: either, which is honest where guessing an owner would not be.
+    helpdesk_watchers: CsvList = []
+    #: How long an open ticket may sit without a fresh sweep notification
+    #: before the sweep decides it is worth mentioning again. Longer than
+    #: `DUE_WINDOW` in `app.tasks` because a ticket has no due date of its own
+    #: to be more or less urgent about -- this is purely "has it been quiet
+    #: for a worryingly long time".
+    helpdesk_stale_hours: float = 48.0
+    #: Domain used in the Message-ID this application generates for outbound
+    #: replies. Cosmetic -- nothing dials it -- but a Message-ID's domain half
+    #: is conventionally the sending system's, and `localhost` in a header a
+    #: customer's mail client stores forever looks like a misconfiguration
+    #: even when delivery worked perfectly.
+    helpdesk_mail_domain: str = "localhost"
+
     notify_webhook_url: str = ""
     notify_webhook_style: str = "slack"
 
@@ -216,7 +235,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "auth_providers", "modules", "dev_auth_roles", "proxy_trusted_ips",
-        "task_watchers",
+        "task_watchers", "helpdesk_watchers",
         "notify_channels",
         mode="before",
     )

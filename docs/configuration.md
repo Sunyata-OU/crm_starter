@@ -117,6 +117,9 @@ S3 credentials and bucket go in `connections.yaml`.
 | `CRM_EMAIL_MIN_PRIORITY` | `high` | Email only at this priority and above. A CRM that emails everything is one people filter into a folder they never read. |
 | `CRM_NOTIFY_WEBHOOK_URL` | — | |
 | `CRM_NOTIFY_WEBHOOK_STYLE` | `slack` | |
+| `CRM_HELPDESK_WATCHERS` | — | Addresses told about a new ticket assigned to nobody, and one ageing while assigned. Empty means nobody is told and the ticket waits. See [`helpdesk.md`](helpdesk.md). |
+| `CRM_HELPDESK_STALE_HOURS` | `48.0` | How long an open ticket may go without a fresh sweep notification before `crm helpdesk-sweep` mentions it again. |
+| `CRM_HELPDESK_MAIL_DOMAIN` | `localhost` | Domain half of the Message-ID this application generates for outbound replies. |
 
 ## Performance
 

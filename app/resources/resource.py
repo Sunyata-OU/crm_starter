@@ -79,6 +79,15 @@ class Resource:
         #: the provider, so every path that creates a record stamps it -- the
         #: form, an action, the API, a script.
         stamp: dict[str, str] | None = None,
+        #: A column to fill with a sequential, human-quotable identifier --
+        #: ``"T-1042"``, an invoice number -- once a record exists and its
+        #: primary key is known, as ``(column, prefix)``. Applied in the
+        #: provider immediately after the insert that reveals the key, the
+        #: same way ``stamp`` is applied immediately after reading the
+        #: caller's identity: every creation path gets it, because there is
+        #: exactly one place all of them pass through. ``None`` for a
+        #: resource with no such identifier.
+        sequence: tuple[str, str] | None = None,
     ) -> None:
         if not fields:
             raise RegistryError(f"resource {name!r} declares no fields")
@@ -112,6 +121,7 @@ class Resource:
         self.timeline = timeline
         self.audited = audited
         self.stamp = dict(stamp or {})
+        self.sequence = sequence
         #: Bound by the registry once connections are open.
         self.provider: Any = None
         #: Set when the resource is registered. Actions use it to reach other

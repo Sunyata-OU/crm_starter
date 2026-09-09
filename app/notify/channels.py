@@ -84,6 +84,23 @@ class EmailChannel(BaseChannel):
         message["From"] = self.sender
         message["To"] = notification.recipient
 
+        # A caller that already knows how this message threads -- the
+        # helpdesk reply box, replying to an inbound email -- passes the
+        # headers in ``meta`` rather than this channel inventing its own
+        # notion of conversations. Left absent by every other caller, which
+        # is why ``meta`` starts empty rather than these being fields on
+        # `Notification` itself: threading is a property of one channel's
+        # wire format, not of a notification in general.
+        message_id = str(notification.meta.get("message_id") or "").strip()
+        in_reply_to = str(notification.meta.get("in_reply_to") or "").strip()
+        references = str(notification.meta.get("references") or "").strip()
+        if message_id:
+            message["Message-ID"] = message_id
+        if in_reply_to:
+            message["In-Reply-To"] = in_reply_to
+        if references:
+            message["References"] = references
+
         lines = [notification.title, ""]
         if notification.body:
             lines += [notification.body, ""]
