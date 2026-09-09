@@ -45,6 +45,7 @@ to start on a configuration that is wrong in a way it can detect — see
 | `CRM_OIDC_SCOPES` | `openid email profile` | |
 | `CRM_OIDC_ROLES_CLAIM` | `roles` | Claim carrying group membership. |
 | `CRM_OIDC_DEFAULT_ROLES` | `user` | Given to anyone the claim does not map. |
+| `CRM_OIDC_KEEP_ACCESS_TOKEN` | `false` | Keep the caller's access token in their session so a `caller_token` REST connection can act as them. The cookie is signed, not encrypted — see below. |
 | `CRM_PROXY_TRUSTED_IPS` | — | Networks allowed to assert identity by header. **Without this the provider stays off**, because otherwise any client could set the header and be anyone. |
 | `CRM_PROXY_USER_HEADER` | `X-Forwarded-User` | |
 | `CRM_PROXY_EMAIL_HEADER` | `X-Forwarded-Email` | |

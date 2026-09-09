@@ -17,7 +17,7 @@ from typing import Any
 
 from app.core.errors import RegistryError
 from app.core.query import Condition, Filter, ListQuery, Op, Sort, and_
-from app.core.results import Identity, Record
+from app.core.results import Ctx, Identity, Record
 from app.fields.base import Field
 from app.fields.types import BackrefField, RelationField
 from app.resources.actions import Action
@@ -42,6 +42,12 @@ class Resource:
         *,
         #: Reference into the connection registry, e.g. ``"db.main#contacts"``.
         provider: str | Any,
+        #: Where writes go, when they do not go to ``provider``. A connection
+        #: name, a ready-made provider, or a factory called with the registry
+        #: and this resource. Reads keep using ``provider``, which is what
+        #: makes "read the database, write through the service's API" a
+        #: two-line declaration rather than a custom provider.
+        write_provider: str | Any = None,
         fields: Sequence[Field],
         label: str = "",
         label_plural: str = "",
@@ -69,6 +75,7 @@ class Resource:
             raise RegistryError(f"resource {name!r} declares no fields")
         self.name = name
         self.provider_ref = provider
+        self.write_provider = write_provider
         # Resource names are conventionally plural ("deals", "companies"), so
         # the plural label is the name humanised and the singular is derived
         # from it -- not the other way round.
@@ -208,15 +215,19 @@ class Resource:
                 return f.name
         return self.pk
 
-    def display_value(self, record: Mapping[str, Any]) -> str:
+    def display_value(self, record: Mapping[str, Any], ctx: Ctx | None = None) -> str:
         """How this record is named in a link, title or typeahead.
 
         Read through the field rather than off the mapping, so a computed
         display field produces its value -- nothing is stored under its key --
         and a stored one is named the way it is shown everywhere else.
+
+        ``ctx`` reaches a computed display field that asked for it: naming a
+        shift by when it is means saying so in the reader's zone, and this is
+        the path every link, breadcrumb and relation column goes through.
         """
         field = self.get_field(self.display_field)
-        value = field.extract(record) if field is not None else record.get(self.display_field)
+        value = field.extract(record, ctx) if field is not None else record.get(self.display_field)
         if value in (None, ""):
             return f"{self.label} #{record.get(self.pk, '?')}"
         return str(field.to_display(value) if field is not None else value)

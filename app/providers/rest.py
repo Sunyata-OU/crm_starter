@@ -80,6 +80,19 @@ class RestMapping:
     #: Extra query parameters sent on every request.
     static_params: dict[str, str] = dc_field(default_factory=dict)
 
+    #: Rename fields on the way *out*, and nest them.
+    #:
+    #: ``{"service_fee_per_hour": "serviceFeePerHour"}`` renames;
+    #: ``{"document_number": "person.documentNumber"}`` nests, creating
+    #: the intermediate objects. Anything not listed is sent under its own
+    #: name, so a mapping only has to describe the differences.
+    #:
+    #: Only writes are mapped. Reads are shaped by the resource's fields
+    #: already, and a two-way mapping would have to be kept consistent in both
+    #: directions for no gain when -- as is common -- the reads come from a
+    #: database and only the writes go to the API.
+    write_field_map: dict[str, str] = dc_field(default_factory=dict)
+
     #: Wrap the body of a write, e.g. ``{"data": ...}``. Empty sends it bare.
     write_envelope: str = ""
     #: Where the created/updated record is in a write response.
@@ -233,9 +246,15 @@ class OAuth2ClientCredentials(httpx.Auth):
 class RestConnection:
     """A shared HTTP client for one API."""
 
-    def __init__(self, client: httpx.AsyncClient, *, base_url: str = "") -> None:
+    def __init__(
+        self, client: httpx.AsyncClient, *, base_url: str = "", caller_token: bool = False
+    ) -> None:
         self.client = client
         self.base_url = base_url
+        #: Send the *caller's* own bearer token when the request has one.
+        #: The client's configured credentials remain the fallback, so reads
+        #: from a background job or the CLI still work.
+        self.caller_token = caller_token
 
     async def close(self) -> None:
         await self.client.aclose()
@@ -252,6 +271,30 @@ async def open_rest(spec: ConnectionSpec) -> RestConnection:
 
     timeout = float(spec.option("timeout", 15.0))
     auth = spec.option("auth") or {}
+
+    # "Act as whoever is signed in." The header cannot be built here -- it
+    # differs per request -- so this arm only records the intent and unwraps
+    # the fallback credentials, which is what a caller with no token uses.
+    caller_token = auth.get("type") == "caller_token"
+    if caller_token:
+        auth = auth.get("fallback") or {}
+
+    flow = _apply_auth(auth, headers, timeout, spec.name)
+
+    client = httpx.AsyncClient(
+        base_url=base_url,
+        headers=headers,
+        auth=flow,
+        timeout=timeout,
+        follow_redirects=True,
+    )
+    return RestConnection(client, base_url=base_url, caller_token=caller_token)
+
+
+def _apply_auth(
+    auth: dict[str, Any], headers: dict[str, str], timeout: float, name: str
+) -> httpx.Auth | None:
+    """Turn one auth block into headers, or into a flow that refreshes itself."""
     flow: httpx.Auth | None = None
 
     match auth.get("type"):
@@ -283,18 +326,11 @@ async def open_rest(spec: ConnectionSpec) -> RestConnection:
             # later as a 401 from the API, which reads like the credentials
             # being wrong rather than the type name being misspelled.
             raise ConfigError(
-                f"unknown auth type {unknown!r} for connection {spec.name!r}; "
-                "known types: bearer, header, basic, oauth2"
+                f"unknown auth type {unknown!r} for connection {name!r}; known "
+                "types: bearer, header, basic, oauth2, caller_token"
             )
 
-    client = httpx.AsyncClient(
-        base_url=base_url,
-        headers=headers,
-        auth=flow,
-        timeout=timeout,
-        follow_redirects=True,
-    )
-    return RestConnection(client, base_url=base_url)
+    return flow
 
 
 async def _check_rest(conn: RestConnection) -> tuple[bool, str]:
@@ -303,7 +339,20 @@ async def _check_rest(conn: RestConnection) -> tuple[bool, str]:
     return response.status_code < 500, f"{conn.base_url} -> HTTP {response.status_code}"
 
 
-def _jsonable(value: Any) -> Any:
+def nest(body: dict[str, Any], path: str, value: Any) -> None:
+    """Put ``value`` at a dotted ``path``, creating the objects on the way."""
+    parts = path.split(".")
+    current = body
+    for part in parts[:-1]:
+        existing = current.get(part)
+        if not isinstance(existing, dict):
+            existing = {}
+            current[part] = existing
+        current = existing
+    current[parts[-1]] = value
+
+
+def jsonable(value: Any) -> Any:
     """Serialise a canonical Python value for a JSON body.
 
     Fields hand over real ``date`` and ``Decimal`` objects; converting them is
@@ -315,9 +364,9 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, Decimal):
         return float(value)
     if isinstance(value, Mapping):
-        return {k: _jsonable(v) for k, v in value.items()}
+        return {k: jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
-        return [_jsonable(v) for v in value]
+        return [jsonable(v) for v in value]
     return value
 
 
@@ -401,13 +450,30 @@ class RestProvider(BaseProvider):
             key = template.format(field=condition.field)
             value = condition.value
             if isinstance(value, (list, tuple, set)):
-                value = ",".join(str(_jsonable(v)) for v in value)
-            params[key] = _jsonable(value)
+                value = ",".join(str(jsonable(v)) for v in value)
+            params[key] = jsonable(value)
         return params
 
-    async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    def _caller_headers(self, ctx: Ctx | None) -> dict[str, str]:
+        """The acting user's bearer, when the connection asked to act as them.
+
+        Absent for a background job, the CLI, or a caller who signed in some
+        other way -- and absent means "use the client's own credentials",
+        which is why those keep working rather than starting to fail with a
+        401 the day this is switched on.
+        """
+        if not getattr(self.connection, "caller_token", False) or ctx is None:
+            return {}
+        token = (ctx.extra or {}).get("access_token")
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
+    async def _get(
+        self, path: str, params: dict[str, Any] | None = None, ctx: Ctx | None = None
+    ) -> Any:
         try:
-            response = await self.connection.client.get(path, params=params or {})
+            response = await self.connection.client.get(
+                path, params=params or {}, headers=self._caller_headers(ctx)
+            )
         except httpx.HTTPError as exc:
             raise ProviderError(f"{self.name}: request failed: {exc}") from exc
         if response.status_code == 404:
@@ -424,7 +490,7 @@ class RestProvider(BaseProvider):
     # -- reads --------------------------------------------------------------
 
     async def list(self, q: ListQuery, ctx: Ctx) -> Page[Record]:
-        payload = await self._get(self.mapping.path, self._params(q))
+        payload = await self._get(self.mapping.path, self._params(q), ctx)
         if payload is None:
             return Page.empty(q)
 
@@ -451,7 +517,7 @@ class RestProvider(BaseProvider):
 
     async def get(self, pk: Any, ctx: Ctx) -> Record | None:
         path = self.mapping.detail_path.format(path=self.mapping.path, pk=pk)
-        payload = await self._get(path, dict(self.mapping.static_params))
+        payload = await self._get(path, dict(self.mapping.static_params), ctx)
         if payload is None:
             return None
         body = dig(payload, self.mapping.write_items_key) if self.mapping.write_items_key else payload
@@ -459,17 +525,31 @@ class RestProvider(BaseProvider):
 
     # -- writes -------------------------------------------------------------
 
+    def _body(self, data: dict[str, Any]) -> dict[str, Any]:
+        """The payload as the API names it.
+
+        Applied here rather than in the resource because it describes the
+        *API*, not the screen: the same field names may be written to two
+        services that spell them differently.
+        """
+        body: dict[str, Any] = {}
+        for key, value in data.items():
+            nest(body, self.mapping.write_field_map.get(key, key), jsonable(value))
+        return body
+
     async def create(self, data: dict[str, Any], ctx: Ctx) -> WriteResult:
-        return await self._write("POST", self.mapping.path, data)
+        return await self._write("POST", self.mapping.path, data, ctx)
 
     async def update(self, pk: Any, data: dict[str, Any], ctx: Ctx) -> WriteResult:
         path = self.mapping.detail_path.format(path=self.mapping.path, pk=pk)
-        return await self._write("PATCH", path, data)
+        return await self._write("PATCH", path, data, ctx)
 
     async def delete(self, pk: Any, ctx: Ctx) -> WriteResult:
         path = self.mapping.detail_path.format(path=self.mapping.path, pk=pk)
         try:
-            response = await self.connection.client.request("DELETE", path)
+            response = await self.connection.client.request(
+                "DELETE", path, headers=self._caller_headers(ctx)
+            )
         except httpx.HTTPError as exc:
             raise ProviderError(f"{self.name}: delete failed: {exc}") from exc
         if response.status_code == 404:
@@ -478,12 +558,16 @@ class RestProvider(BaseProvider):
             return WriteResult.failure(f"The API refused the deletion (HTTP {response.status_code}).")
         return WriteResult.success()
 
-    async def _write(self, method: str, path: str, data: dict[str, Any]) -> WriteResult:
-        body: Any = {k: _jsonable(v) for k, v in data.items()}
+    async def _write(
+        self, method: str, path: str, data: dict[str, Any], ctx: Ctx | None = None
+    ) -> WriteResult:
+        body: Any = self._body(data)
         if self.mapping.write_envelope:
             body = {self.mapping.write_envelope: body}
         try:
-            response = await self.connection.client.request(method, path, json=body)
+            response = await self.connection.client.request(
+                method, path, json=body, headers=self._caller_headers(ctx)
+            )
         except httpx.HTTPError as exc:
             raise ProviderError(f"{self.name}: write failed: {exc}") from exc
 

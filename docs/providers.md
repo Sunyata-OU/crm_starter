@@ -143,10 +143,54 @@ routing key.
 | `RestProvider` | Declarative mapping of an HTTP API: where rows live, how pages work, which filters push down. |
 | `AMQPWriteProvider` | Publishes commands. Writes return `PENDING`; reads are refused rather than faked. |
 | `MemoryProvider` | Tests, demos, prototypes. Capabilities configurable, which is how the shim is tested. |
-| `CompositeProvider` | Reads from one, writes to another. Declare with `resource.write_provider = "mq.events#thing"`. |
+| `CompositeProvider` | Reads from one, writes to another. Declare with `write_provider=` on the resource: a connection name, a provider, or a factory called with `(registry, resource)`. |
 | `UnionProvider` | Reads one resource from several backends at once. Declare with `provider=Union(...)`; see [Several databases](multiple-databases.md). |
 | `ReadOnly` | Wraps any provider to refuse writes. |
 | `AuditingProvider` | Wraps any provider to record every write, with before/after values. Applied automatically; not something a resource declares. |
+
+## A table the database does not have
+
+A resource names `db.main#thing`, and `thing` is normally a table. It may
+instead be a **derived target**: a SELECT declared in the module that needs it,
+aliased under a name and used everywhere a table would be.
+
+```python
+from app.providers.sql import register_selectable
+
+def occupancy(tables):
+    venues, bookings = tables["venues"], tables["bookings"]
+    return (
+        select(venues.c.id.label("id"), venues.c.name.label("name"),
+               func.coalesce(func.sum(bookings.c.guests), 0).label("guests"))
+        .select_from(venues.outerjoin(bookings, bookings.c.venue_id == venues.c.id))
+        .group_by(venues.c.id, venues.c.name)
+    )
+
+register_selectable("venue_occupancy", tables=("venues", "bookings"),
+                    build=occupancy, description="Guests booked per venue.")
+
+Resource("occupancy", provider="db.main#venue_occupancy", pk="id", fields=[...])
+```
+
+The reason this exists rather than "create a view": a database read through a
+provider is frequently owned by whatever service migrates it, so this
+application may read it and may not add anything to it. A derived target keeps
+the definition here, versioned with the screen it feeds.
+
+Everything downstream — filters, sorting, grouping, the shim, every view — sees
+a table like any other, because the statement is aliased as a subquery before
+the provider composes onto it. Its sources are reflected through the same cache
+the tables use, so it costs no extra catalogue queries.
+
+Two consequences worth stating:
+
+- **It is read-only by construction.** There is no row behind a computed one,
+  so the factory builds a read-only provider and a write is refused rather than
+  attempted. Send the write somewhere that will accept it — see
+  `write_provider` in the table above.
+- **The resource must name its key.** A subquery declares no primary key, so
+  `pk=` is the only thing that can address a row, and the SELECT has to include
+  it.
 
 ## REST connection authentication
 
@@ -176,6 +220,46 @@ cold connection share one token fetch rather than each opening their own.
 An unrecognised `type` is refused when the connection opens. Ignoring it would
 build an unauthenticated client, and the resulting 401 from the API reads like
 wrong credentials rather than a misspelled type name.
+
+### Acting as the signed-in user
+
+Every mode above authenticates as the *application*, so the API sees one
+identity no matter who clicked. When the API is the real system of record that
+is usually wrong: its audit trail should name the person.
+
+```yaml
+      auth:
+        type: caller_token
+        fallback:                          # used when the caller has no token
+          type: oauth2
+          token_url: https://issuer/oauth/token
+          client_id: ${API_CLIENT_ID}
+          client_secret: ${API_CLIENT_SECRET}
+```
+
+The header is built per request from the caller's own OIDC access token, which
+means two things must both be true: the deployment sets
+`CRM_OIDC_KEEP_ACCESS_TOKEN=true`, and the caller signed in through OIDC.
+
+`fallback` covers everyone else — a background job, the CLI, a caller who
+signed in with a password — and is an ordinary auth block of any of the types
+above. Without it those callers make unauthenticated requests, which is
+occasionally what you want and usually a 401.
+
+Two costs, stated plainly rather than discovered later:
+
+- **The session cookie is signed, not encrypted.** Anyone who can read the
+  cookie can read the token in it. It is `HttpOnly`, `Secure` and `SameSite`,
+  and the holder is the person whose token it is — but this is a decision to
+  take deliberately, which is why the setting is off by default.
+- **A token is large.** If the cookie will not fit in 4 KB the session is
+  stored *without* the token and a warning is logged: writes then fall back to
+  the connection's credentials. The alternative is a cookie the browser
+  silently discards, which signs the person out on their next click.
+
+Only the access token is kept. A refresh token would let whoever reads the
+cookie mint new tokens long after the session ended — a much larger promise
+than "act as this person while they are signed in".
 
 ## Asynchronous writes
 

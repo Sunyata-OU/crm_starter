@@ -10,6 +10,7 @@ Keeping all of that on one object is what makes a resource declaration short.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -20,6 +21,25 @@ from app.core.results import Ctx, Identity
 
 #: Returned by ``to_python`` when the submitted value means "no value".
 EMPTY = object()
+
+
+def _takes_ctx(compute: Callable[..., Any]) -> bool:
+    """Whether a compute wants the request context as a second argument.
+
+    Read off the signature rather than declared with a flag, so a computed
+    field says what it needs by taking it -- the same way an action handler
+    opts into its params. A callable whose signature cannot be read (a builtin,
+    a C extension) is treated as the common case, which is one argument.
+    """
+    try:
+        parameters = list(inspect.signature(compute).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    positional = [
+        p for p in parameters
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    return len(positional) >= 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +138,11 @@ class Field:
         css_class: str = "",
         widget: str = "",
         #: Called with the record to produce a value for computed columns.
-        compute: Callable[[Mapping[str, Any]], Any] | None = None,
+        #: A callable that declares a second parameter is handed the request
+        #: context as well, which is how a computed label can be rendered in
+        #: the reader's timezone -- the same signature dispatch an action
+        #: handler uses for its params.
+        compute: Callable[..., Any] | None = None,
         **options: Any,
     ) -> None:
         self.name = name
@@ -143,6 +167,7 @@ class Field:
         self.css_class = css_class
         self.widget = widget
         self.compute = compute
+        self.compute_wants_ctx = compute is not None and _takes_ctx(compute)
         self.options = options
 
     # -- visibility ---------------------------------------------------------
@@ -159,10 +184,17 @@ class Field:
 
     # -- value pipeline -----------------------------------------------------
 
-    def extract(self, record: Mapping[str, Any]) -> Any:
-        """The stored value for this field, running ``compute`` if declared."""
+    def extract(self, record: Mapping[str, Any], ctx: Ctx | None = None) -> Any:
+        """The stored value for this field, running ``compute`` if declared.
+
+        ``ctx`` is passed on to a compute that asked for it. It is optional
+        because most callers have no request to hand -- a CLI command, a
+        provider resolving a label for a background job -- and a computed
+        value that needs the reader's zone falls back to UTC rather than
+        refusing to render.
+        """
         if self.compute is not None:
-            return self.compute(record)
+            return self.compute(record, ctx) if self.compute_wants_ctx else self.compute(record)
         return record.get(self.name, self.default)
 
     def to_python(self, raw: Any) -> Any:

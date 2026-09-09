@@ -12,6 +12,7 @@ connection-backed object at runtime.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -280,12 +281,16 @@ class Registry:
         # A resource may read from one backend and write to another -- a read
         # replica with writes going to a queue, say. Declaring the write half
         # separately keeps that a one-line change rather than a custom provider.
+        # Asked as "was one declared", not as "is it truthy": a provider is an
+        # object with rows in it, and an empty one is falsey. Testing the truth
+        # of it drops the write half of a resource whose sink happens to be
+        # empty, which is exactly the state it is in before the first write.
         write_ref = getattr(resource, "write_provider", None)
-        if write_ref:
+        if write_ref is not None and write_ref != "":
             from app.providers.composite import CompositeProvider
 
             provider = CompositeProvider(
-                provider, await self._build_named(write_ref, resource)
+                provider, await self._build_write_half(write_ref, resource)
             )
 
         # Auditing wraps the backend but sits inside the shim: it must see the
@@ -301,6 +306,23 @@ class Registry:
         # Every provider enters the system through the shim, so views can rely
         # on the full query contract regardless of the backend.
         return ensure_full(provider, search_fields=resource.searchable_fields())
+
+    async def _build_write_half(self, ref: Any, resource: Resource) -> Provider:
+        """The write half of a composite, from a name, an object or a factory.
+
+        A name covers the common case -- writes go to another declared
+        connection. The other two exist because a write half sometimes needs
+        the registry itself: it may have to look something up in a *different*
+        resource before it knows where to send the write. A factory is given
+        the registry and the resource and returns the provider, which keeps
+        that dependency explicit rather than smuggled in through a global.
+        """
+        if isinstance(ref, str):
+            return await self._build_named(ref, resource)
+        if callable(ref) and not hasattr(ref, "update"):
+            built = ref(self, resource)
+            return await built if inspect.isawaitable(built) else built
+        return ref
 
     async def _build_union(self, spec: Union, resource: Resource) -> Provider:
         """Build one provider per source and merge them.

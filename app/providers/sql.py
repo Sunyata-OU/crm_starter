@@ -10,7 +10,7 @@ resource point at an existing schema without a model class being written for it.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date as date_type
 from datetime import datetime as datetime_type
 from datetime import time as time_type
@@ -19,6 +19,7 @@ from typing import Any
 
 from sqlalchemy import (
     Table,
+    case,
     delete,
     func,
     insert,
@@ -38,6 +39,7 @@ from sqlalchemy import (
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.sql import ColumnElement, Select
+from sqlalchemy.sql.selectable import Subquery
 
 from app.core.connections import ConnectionSpec, register_connection
 from app.core.errors import (
@@ -68,6 +70,66 @@ from app.providers.base import FULL, BaseProvider, Rows
 
 # -- connection ------------------------------------------------------------
 
+#: What the provider composes queries onto: a reflected table, or a derived
+#: target aliased to look like one. Both carry named columns, which is all any
+#: of the query building below asks of them.
+TableLike = Table | Subquery
+
+
+
+#: Selectables standing in where the database has no table to point at, by
+#: name. A module registers one when the rows a screen needs are a join or a
+#: calculation over tables this application is not allowed to change -- see
+#: :func:`register_selectable`.
+_SELECTABLES: dict[str, DerivedTarget] = {}
+
+
+class DerivedTarget:
+    """A named SELECT a resource may name in place of a table.
+
+    ``build`` is handed the reflected tables it asked for and returns a
+    statement; the result is aliased under ``name``, so everything downstream --
+    filters, sorting, grouping, the shim, the views -- sees a table like any
+    other and nothing above the provider knows the difference.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        tables: Sequence[str],
+        build: Any,
+        *,
+        description: str = "",
+    ) -> None:
+        self.name = name
+        self.tables = tuple(tables)
+        self.build = build
+        self.description = description
+
+
+def register_selectable(
+    name: str,
+    *,
+    tables: Sequence[str],
+    build: Any,
+    description: str = "",
+) -> None:
+    """Declare ``name`` as a SELECT over ``tables`` rather than a table itself.
+
+    The reason this exists rather than "create a view": a database read
+    through a provider is frequently owned by whatever service migrates it, so
+    this application may read it and may not add anything to it. A derived
+    target keeps the definition here, in the module that needs it, versioned
+    with the screen it feeds -- and read-only by construction, because a
+    provider built on one refuses every write.
+    """
+    _SELECTABLES[name] = DerivedTarget(name, tables, build, description=description)
+
+
+def selectable(name: str) -> DerivedTarget | None:
+    """The derived target registered under ``name``, if there is one."""
+    return _SELECTABLES.get(name)
+
 
 class SQLConnection:
     """An async engine plus the tables reflected from it so far."""
@@ -78,12 +140,14 @@ class SQLConnection:
         # a test, a script, an embedding application -- is counted too.
         instrument_engine(engine)
         self.schema = schema
-        self._tables: dict[str, Table] = {}
+        self._tables: dict[str, TableLike] = {}
 
-    async def table(self, name: str) -> Table:
+    async def table(self, name: str) -> TableLike:
         """Reflect ``name`` once and cache it."""
         if name in self._tables:
             return self._tables[name]
+        if (derived := selectable(name)) is not None:
+            return await self._derived(derived)
         from sqlalchemy import MetaData
 
         metadata = MetaData(schema=self.schema)
@@ -113,6 +177,27 @@ class SQLConnection:
             )
         self._tables[name] = table
         return table
+
+    async def _derived(self, target: DerivedTarget) -> TableLike:
+        """Build a registered SELECT and cache it under its name.
+
+        Its sources are reflected through this same method, so a derived target
+        costs exactly the catalogue queries its tables do and shares their
+        cache with every other screen on this connection.
+        """
+        sources = {name: await self.table(name) for name in target.tables}
+        try:
+            statement = target.build(sources)
+        except SQLAlchemyError as exc:
+            raise ConfigError(
+                f"the derived target {target.name!r} could not be built: {exc}"
+            ) from exc
+        # An alias, not the SELECT itself: the provider composes filters,
+        # ordering and grouping onto whatever it is given, and only something
+        # with named columns can carry that.
+        built = statement.subquery(target.name)
+        self._tables[target.name] = built
+        return built
 
     async def close(self) -> None:
         await self.engine.dispose()
@@ -158,7 +243,15 @@ async def _check_sql(conn: SQLConnection) -> tuple[bool, str]:
 # -- filter translation ----------------------------------------------------
 
 
-def _column(table: Table, name: str) -> ColumnElement[Any]:
+#: Expressions standing in for columns, by resource. Populated when a provider
+#: is built, because a `CaseField` is declared on the resource and compiled
+#: here -- the field knows what it means, the provider knows how to say it.
+Derived = Mapping[str, Any]
+
+
+def _column(table: TableLike, name: str, derived: Derived | None = None) -> ColumnElement[Any]:
+    if derived and name in derived:
+        return derived[name]
     try:
         return table.c[name]
     except KeyError:
@@ -168,7 +261,38 @@ def _column(table: Table, name: str) -> ColumnElement[Any]:
         ) from None
 
 
-def build_condition(table: Table, cond: Condition) -> ColumnElement[bool]:
+def build_derived(table: TableLike, resource: Any) -> dict[str, Any]:
+    """Compile every `CaseField` the resource declares into a CASE expression.
+
+    Done once per provider rather than per query: the branches are static, so
+    the expression is too, and rebuilding it on every list would be work for
+    nothing.
+    """
+    from app.fields.types import CaseField
+
+    compiled: dict[str, Any] = {}
+    for field in getattr(resource, "fields", ()):
+        if not isinstance(field, CaseField):
+            continue
+        branches = []
+        for when, value in field.cases:
+            # A string branch is SQL written by the module author -- see
+            # `CaseField` on why that door exists and how narrow it is.
+            condition = text(when) if isinstance(when, str) else build_filter(table, when)
+            if condition is None:
+                continue
+            # The *rank*, not the label: this column is selected to be sorted
+            # and grouped by, and sorting labels would sort them alphabetically.
+            branches.append((condition, field.rank(value)))
+        if not branches:
+            continue
+        compiled[field.name] = case(
+            *branches, else_=field.rank(field.default)
+        ).label(field.name)
+    return compiled
+
+
+def build_condition(table: TableLike, cond: Condition) -> ColumnElement[bool]:
     """Translate one condition into a SQL expression.
 
     Values are coerced to the column's own type first. A filter value is text
@@ -304,7 +428,7 @@ def _escape_like(value: Any) -> str:
     return str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def build_filter(table: Table, f: Filter | None) -> ColumnElement[bool] | None:
+def build_filter(table: TableLike, f: Filter | None) -> ColumnElement[bool] | None:
     """Translate a filter tree into a SQL WHERE expression."""
     if f is None:
         return None
@@ -319,7 +443,7 @@ def build_filter(table: Table, f: Filter | None) -> ColumnElement[bool] | None:
     return sa_and(*parts) if f.op == "and" else sa_or(*parts)
 
 
-def build_search(table: Table, term: str, fields: tuple[str, ...]) -> ColumnElement[bool] | None:
+def build_search(table: TableLike, term: str, fields: tuple[str, ...]) -> ColumnElement[bool] | None:
     """Every word must appear in at least one searched column."""
     words = [w for w in term.split() if w]
     if not words or not fields:
@@ -334,12 +458,14 @@ def build_search(table: Table, term: str, fields: tuple[str, ...]) -> ColumnElem
     return sa_and(*clauses)
 
 
-def build_order(table: Table, sorts: tuple[Sort, ...]) -> list[ColumnElement[Any]]:
+def build_order(
+    table: TableLike, sorts: tuple[Sort, ...], derived: Derived | None = None
+) -> list[ColumnElement[Any]]:
     order: list[ColumnElement[Any]] = []
     for s in sorts:
-        if s.field not in table.c:
+        if s.field not in table.c and not (derived and s.field in derived):
             continue
-        col = _column(table, s.field)
+        col = _column(table, s.field, derived)
         # NULLs last in both directions matches what the local engine does, so
         # a list looks the same whichever backend serves it.
         order.append(col.desc().nullslast() if s.dir is SortDir.DESC else col.asc().nullslast())
@@ -361,44 +487,90 @@ class SQLProvider(BaseProvider):
         pk_field: str = "id",
         searchable_fields: tuple[str, ...] = (),
         read_only: bool = False,
+        resource: Any = None,
     ) -> None:
         self.connection = connection
         self.table_name = table_name
+        #: The resource, kept only to compile its derived expressions once the
+        #: table has been reflected -- which cannot happen at construction.
+        self.resource = resource
+        self._derived: dict[str, Any] | None = None
         self.name = name or f"sql:{table_name}"
         self.pk_field = pk_field
         self.capabilities = FULL.replace(
             searchable_fields=searchable_fields,
             **({"write": False, "delete": False} if read_only else {}),
         )
-        self._table: Table | None = None
+        self._table: TableLike | None = None
 
-    async def table(self) -> Table:
+    async def table(self) -> TableLike:
         if self._table is None:
             self._table = await self.connection.table(self.table_name)
         return self._table
 
-    def _pk_column(self, table: Table) -> ColumnElement[Any]:
+    async def _writable_table(self) -> Table:
+        """The table a write goes to, which a derived target is not.
+
+        A derived target is a SELECT: the factory already builds a read-only
+        provider over one, so nothing should reach here. Saying it again where
+        the type narrows costs a line and turns "somebody bypassed the
+        capability" from an AttributeError deep in SQLAlchemy into the refusal
+        it was meant to be.
+        """
+        table = await self.table()
+        if not isinstance(table, Table):
+            raise UnsupportedOperation(
+                f"{self.table_name!r} is a derived target and cannot be written to"
+            )
+        return table
+
+    async def derived(self) -> dict[str, Any]:
+        """Expressions standing in for columns the table does not have."""
+        if self._derived is None:
+            self._derived = (
+                build_derived(await self.table(), self.resource) if self.resource else {}
+            )
+        return self._derived
+
+    def _pk_column(self, table: TableLike) -> ColumnElement[Any]:
         if self.pk_field in table.c:
             return table.c[self.pk_field]
-        # Fall back to the declared primary key when the resource did not name one.
-        primary = list(table.primary_key.columns)
+        # Fall back to the declared primary key when the resource did not name
+        # one. A derived target has none to declare, so the resource naming a
+        # key column is the only thing that can address its rows -- and saying
+        # that is more use than an AttributeError from SQLAlchemy.
+        # A Table answers with a PrimaryKeyConstraint and a subquery with a
+        # bare ColumnSet, so ask for the columns and settle for the thing
+        # itself -- an empty set, in the derived case, which is the point.
+        declared = getattr(table, "primary_key", None)
+        columns = getattr(declared, "columns", declared)
+        primary = list(columns) if columns is not None else []
         if not primary:
-            raise ProviderError(f"table {table.name!r} has no primary key to address rows by")
+            raise ProviderError(
+                f"{table.name!r} has no primary key to address rows by; "
+                f"the resource must name one that its columns include"
+            )
         return primary[0]
 
-    def _selected(self, table: Table, q: ListQuery) -> Sequence[ColumnElement[Any]]:
+    def _selected(
+        self, table: TableLike, q: ListQuery, derived: Derived | None = None
+    ) -> Sequence[ColumnElement[Any]]:
         """Columns to select, always including the primary key.
 
         Narrowing to the fields a view needs matters on wide tables; keeping
         the key means the rendered rows can still link to their detail page.
+        Derived expressions ride along: they are the reason a screen can group
+        by something no column holds.
         """
+        extra = list((derived or {}).values())
         if not q.fields:
-            return list(table.c)
+            return [*table.c, *extra]
         wanted = set(q.fields) | {self.pk_field}
         chosen = [c for c in table.c if c.name in wanted]
-        return chosen or list(table.c)
+        chosen += [e for name, e in (derived or {}).items() if name in wanted]
+        return chosen or [*table.c, *extra]
 
-    def _apply_where(self, stmt: Select, table: Table, q: ListQuery) -> Select:
+    def _apply_where(self, stmt: Select, table: TableLike, q: ListQuery) -> Select:
         where = build_filter(table, q.effective_filter)
         if where is not None:
             stmt = stmt.where(where)
@@ -422,12 +594,13 @@ class SQLProvider(BaseProvider):
 
     async def list(self, q: ListQuery, ctx: Ctx) -> Page[Record]:
         table = await self.table()
-        stmt = select(*self._selected(table, q))
+        derived = await self.derived()
+        stmt = select(*self._selected(table, q, derived))
         stmt = self._apply_where(stmt, table, q)
 
         # Without a deterministic order, pagination can repeat or skip rows
         # between requests, so fall back to the primary key.
-        order = build_order(table, q.sort) or [self._pk_column(table)]
+        order = build_order(table, q.sort, derived) or [self._pk_column(table)]
         stmt = stmt.order_by(*order)
 
         stmt = stmt.limit(q.page_size).offset(q.offset)
@@ -513,7 +686,7 @@ class SQLProvider(BaseProvider):
     # -- writes -------------------------------------------------------------
 
     async def create(self, data: dict[str, Any], ctx: Ctx) -> WriteResult:
-        table = await self.table()
+        table = await self._writable_table()
         values = self._known_columns(table, data)
         if not values:
             return WriteResult.failure("Nothing to save.")
@@ -534,7 +707,7 @@ class SQLProvider(BaseProvider):
         return WriteResult.success(created)
 
     async def update(self, pk: Any, data: dict[str, Any], ctx: Ctx) -> WriteResult:
-        table = await self.table()
+        table = await self._writable_table()
         column = self._pk_column(table)
         key = self._coerce_pk(column, pk)
         values = self._known_columns(table, data, exclude_pk=True)
@@ -567,7 +740,7 @@ class SQLProvider(BaseProvider):
         None rather than as an error, because losing the race is a normal
         outcome and the caller's next move is to move on, not to retry.
         """
-        table = await self.table()
+        table = await self._writable_table()
         column = self._pk_column(table)
         key = self._coerce_pk(column, pk)
         values = self._known_columns(table, data, exclude_pk=True)
@@ -601,7 +774,7 @@ class SQLProvider(BaseProvider):
         return WriteResult.success(await self.get(key, ctx))
 
     async def delete(self, pk: Any, ctx: Ctx) -> WriteResult:
-        table = await self.table()
+        table = await self._writable_table()
         column = self._pk_column(table)
         key = self._coerce_pk(column, pk)
         existing = await self.get(key, ctx)
@@ -619,7 +792,7 @@ class SQLProvider(BaseProvider):
         return WriteResult.success(existing)
 
     def _known_columns(
-        self, table: Table, data: dict[str, Any], *, exclude_pk: bool = False
+        self, table: TableLike, data: dict[str, Any], *, exclude_pk: bool = False
     ) -> dict[str, Any]:
         """Keep only keys that are real columns, adapted to their types.
 
@@ -677,11 +850,18 @@ def _readable_integrity_error(exc: IntegrityError) -> str:
 
 @register_provider_factory("sqlalchemy")
 def build_sql_provider(handle: SQLConnection, target: str, resource) -> SQLProvider:
-    """Wire a resource declaring ``db.name#table`` to that table."""
+    """Wire a resource declaring ``db.name#table`` to that table.
+
+    ``target`` may also name a registered derived target, in which case the
+    provider is read-only: there is no row behind a computed one to write back
+    to, and the databases these are used over are not ours to write to anyway.
+    """
     return SQLProvider(
         handle,
         target,
         name=f"sql:{target}",
         pk_field=resource.pk,
         searchable_fields=resource.searchable_fields(),
+        read_only=selectable(target) is not None,
+        resource=resource,
     )

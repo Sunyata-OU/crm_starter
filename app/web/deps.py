@@ -105,11 +105,21 @@ class View:
     @property
     def ctx(self) -> Ctx:
         """The context handed to providers."""
+        extra: dict[str, Any] = {"ip": self.client_ip}
+        # Present only when the deployment keeps it (CRM_OIDC_KEEP_ACCESS_TOKEN)
+        # and the caller signed in through OIDC. A provider configured for
+        # `caller_token` reads it here and falls back to its own credentials
+        # when it is absent -- which is what makes the CLI and background jobs
+        # keep working.
+        if self.settings.oidc_keep_access_token:
+            token = self.state.sessions.access_token(self.request)
+            if token:
+                extra["access_token"] = token
         return Ctx(
             identity=self.identity,
             request_id=self.request_id,
             timezone=self.timezone,
-            extra={"ip": self.client_ip},
+            extra=extra,
         )
 
     @property
@@ -201,6 +211,10 @@ class View:
             # Read by the date/time filters. Presentation only: what is stored
             # is always UTC.
             "timezone": self.timezone,
+            # The same thing in the form a field expects, for a computed value
+            # that renders itself -- a shift naming itself by when it is has to
+            # say so in the reader's zone, like every other instant on the page.
+            "render_ctx": self.ctx,
             # Whether this application holds this person's password, so the
             # account menu can offer to change it only when changing it here
             # would do something. Under SSO it is None.

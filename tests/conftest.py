@@ -220,11 +220,23 @@ def client(app):
         yield c
 
 
-def sign_in(client: TestClient, *, email: str, roles: list[str], subject: str = "") -> None:
+def sign_in(
+    client: TestClient,
+    *,
+    email: str,
+    roles: list[str],
+    subject: str = "",
+    timezone: str = "UTC",
+) -> None:
     """Put a signed session cookie in place, bypassing the login form.
 
     The login form has its own tests; everything else needs an identity, not a
     re-test of how one is obtained.
+
+    ``timezone`` is the signed-in person's own preference, which is what every
+    rendered instant is converted into. It takes a parameter because "the same
+    row read from Warsaw and from UTC" is a difference several screens are
+    supposed to show, and a test cannot ask for it any other way.
     """
     from starlette.responses import Response
 
@@ -237,6 +249,7 @@ def sign_in(client: TestClient, *, email: str, roles: list[str], subject: str = 
         display_name=email.split("@")[0].title(),
         roles=frozenset(roles),
         provider="session",
+        timezone=timezone,
     )
     carrier = Response()
     state.sessions.save_identity(carrier, identity)

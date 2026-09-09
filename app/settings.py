@@ -99,6 +99,21 @@ class Settings(BaseSettings):
 
     # -- data ---------------------------------------------------------------
     connections_file: str = "connections.yaml"
+    #: Keep the caller's OIDC access token for the life of their session, so
+    #: a REST provider can act as them rather than as a service account.
+    #:
+    #: Off by default, and it should stay off unless a backing API needs it:
+    #: the session cookie is *signed, not encrypted*, so anyone who can read
+    #: the cookie can read the token in it. It is HttpOnly, Secure and
+    #: SameSite, and the holder is the person whose token it is -- but that is
+    #: a decision to take on purpose rather than to inherit from an upgrade.
+    #:
+    #: The token is also large. If the cookie will not fit within 4 KB the
+    #: session is stored without it and a warning is logged; writes then fall
+    #: back to the connection's own credentials rather than the session
+    #: silently disappearing.
+    oidc_keep_access_token: bool = False
+
     #: Optional modules to switch on, by name. Additive: the platform's own
     #: modules load whatever this says, so listing the demo here cannot leave
     #: an application without accounts or access control.

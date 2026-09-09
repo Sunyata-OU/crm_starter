@@ -229,6 +229,68 @@ class TestIdentityCarriesTheZone:
         assert restored.timezone == TOKYO, "otherwise it reverts on the next request"
 
 
+class TestAComputedValueCanAskWhoIsReading:
+    """A computed field is handed the record and, if it asks, the context.
+
+    Naming a shift by when it is means saying so in the reader's hours, and
+    the display field is what every link, breadcrumb and relation column goes
+    through. The signature is the request: a callable that declares a second
+    parameter gets one, exactly as an action handler opts into its params.
+    """
+
+    ROW = {"id": 1, "starts_at": datetime(2026, 6, 3, 22, 30, tzinfo=UTC)}
+
+    @staticmethod
+    def _field(compute):
+        from app.fields.base import Field
+
+        return Field("label", compute=compute)
+
+    @staticmethod
+    def _ctx(zone):
+        from app.core.results import Ctx, Identity
+
+        return Ctx(
+            identity=Identity(subject="t", roles=("admin",), claims={}, timezone=zone),
+            request_id="r",
+        )
+
+    def test_a_one_argument_compute_is_called_the_way_it_always_was(self):
+        field = self._field(lambda record: str(record["id"]))
+        assert field.extract(self.ROW, self._ctx("Asia/Tokyo")) == "1"
+
+    def test_a_two_argument_compute_is_given_the_context(self):
+        field = self._field(lambda record, ctx: to_zone(
+            record["starts_at"], ctx.identity.timezone).strftime("%H:%M"))
+        assert field.extract(self.ROW, self._ctx("Asia/Tokyo")) == "07:30"
+        assert field.extract(self.ROW, self._ctx("UTC")) == "22:30"
+
+    def test_without_a_context_it_falls_back_rather_than_refusing(self):
+        """Most callers have no request to hand -- a CLI command, a provider
+        labelling rows for a background job -- and a page that cannot render
+        is worse than one rendered in UTC."""
+        field = self._field(lambda record, ctx: "reader" if ctx else "utc")
+        assert field.extract(self.ROW) == "utc"
+
+    def test_the_display_name_of_a_record_is_computed_in_the_readers_zone(self):
+        from app.fields.base import Field
+        from app.providers.memory import MemoryProvider
+        from app.resources.resource import Resource
+
+        resource = Resource(
+            "shifts",
+            provider=MemoryProvider([self.ROW]),
+            display_field="label",
+            fields=[
+                Field("id", in_form=False),
+                Field("label", compute=lambda record, ctx: to_zone(
+                    record["starts_at"], ctx.identity.timezone).strftime("%d %b %H:%M")),
+            ],
+        )
+        assert resource.display_value(self.ROW, self._ctx("Asia/Tokyo")) == "04 Jun 07:30"
+        assert resource.display_value(self.ROW, self._ctx("UTC")) == "03 Jun 22:30"
+
+
 class TestThroughTheWebLayer:
     """The whole path: stored UTC, rendered per reader."""
 
