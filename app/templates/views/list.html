@@ -15,6 +15,16 @@
          hx-swap="innerHTML"
        {% endif %}>New {{ resource.label|lower }}</a>
   {% endif %}
+  {# Actions whose subject is the screen rather than a row: an import, a
+     reconciliation. They go through the same prompt dialog as any other
+     action, with no selection behind them. #}
+  {% for a in list_actions|default([]) %}
+    <a class="btn {{ 'btn-danger' if a.style == 'danger' else '' }}"
+       href="/r/{{ resource.name }}/bulk/{{ a.name }}/prompt"
+       hx-get="/r/{{ resource.name }}/bulk/{{ a.name }}/prompt"
+       hx-target="#modal" hx-swap="innerHTML">
+      {% if a.icon %}<span aria-hidden="true">{{ a.icon }}</span> {% endif %}{{ a.label }}</a>
+  {% endfor %}
 {% endblock %}
 
 {% block content %}

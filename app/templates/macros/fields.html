@@ -56,3 +56,40 @@
   {% if bound.has_error %}aria-invalid="true" aria-describedby="err_{{ bound.field.name }}"
   {% elif bound.field.help %}aria-describedby="help_{{ bound.field.name }}"{% endif %}
 {% endmacro %}
+
+{#
+  One cell of a `rows` grid.
+
+  Rendered here rather than through `input()` because every cell in a column
+  shares one form key -- `rows.email`, repeated once per row -- which is what
+  lets the server read the table back as parallel arrays. The per-type input
+  templates name themselves after the field, which is right everywhere else
+  and wrong here.
+
+  The mapping is deliberately small: a grid is for entering records, and the
+  column types that make sense in one are text, numbers, dates and choices.
+  Anything else falls back to a text box rather than rendering something that
+  would not submit.
+#}
+{% macro grid_cell(grid, column, value) %}
+  {%- set key = grid.name ~ "." ~ column.name -%}
+  {%- set kind = column.input_template -%}
+  {% if column.choices(None) %}
+    <select name="{{ key }}" aria-label="{{ column.label }}">
+      <option value=""></option>
+      {% for choice in column.choices(None) %}
+        <option value="{{ choice.value }}"
+                {{ 'selected' if value is not none and choice.value|string == value|string }}>
+          {{ choice.label }}</option>
+      {% endfor %}
+    </select>
+  {% else %}
+    <input name="{{ key }}" aria-label="{{ column.label }}"
+           value="{{ value if value is not none else '' }}"
+           {% if kind == 'number.html' %}type="number" step="{{ column.step|default('any') }}"
+           {% elif kind == 'date.html' %}type="date"
+           {% elif kind == 'datetime.html' %}type="datetime-local"
+           {% elif kind == 'email.html' %}type="email"
+           {% else %}type="text"{% endif %}>
+  {% endif %}
+{% endmacro %}

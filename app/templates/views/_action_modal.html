@@ -1,0 +1,54 @@
+{#
+  A dialog that collects what an action needs before it runs.
+
+  It posts to the action's own URL and swaps itself, so a rejected submission
+  comes back into the dialog with the errors in place -- the same shape as the
+  record form modal, and for the same reason: a validation failure must not
+  replace the page behind it.
+#}
+{% import "macros/fields.html" as f with context %}
+
+<div class="modal-backdrop" onclick="if (event.target === this) crm.closeModal()">
+  {# A grid of eight columns does not fit a 680px dialog, and shrinking the
+     inputs to make it would make them unreadable. It gets a wider dialog and
+     scrolls sideways inside it. #}
+  {% set grids = form.fields.values()|selectattr("field.input_template", "equalto", "rows.html")|list %}
+  <div class="modal-dialog {{ 'modal-wide' if grids }}"
+       role="dialog" aria-modal="true" aria-label="{{ title }}">
+    <header class="modal-head">
+      <h2>{{ title }}</h2>
+      <button class="icon-button" type="button" aria-label="Close"
+              onclick="crm.closeModal()">×</button>
+    </header>
+    <div class="modal-body">
+      {# A file input needs a multipart body, and htmx encodes urlencoded
+         unless told otherwise -- so an upload would arrive as its filename. #}
+      {% set uploads = form.fields.values()|selectattr("field.input_template", "equalto", "upload.html")|list %}
+      <form class="record-form" method="post" action="{{ post_url }}"
+            {% if uploads %}enctype="multipart/form-data" hx-encoding="multipart/form-data"{% endif %}
+            hx-post="{{ post_url }}" hx-target="#modal" hx-swap="innerHTML" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {# Carried through the dialog so the selection survives the round trip. #}
+        {% for key in selected %}
+          <input type="hidden" name="selected" value="{{ key }}">
+        {% endfor %}
+
+        {% if subject %}<p class="section-help">{{ subject }}</p>{% endif %}
+        {% if form.summary %}
+          <div class="alert alert-error" role="alert">{{ form.summary }}</div>
+        {% endif %}
+
+        <div class="form-grid cols-1">
+          {% for bound in form %}{{ f.field_row(resource, bound, templates, form) }}{% endfor %}
+        </div>
+
+        <footer class="form-actions">
+          <button type="button" class="btn" onclick="crm.closeModal()">Cancel</button>
+          <button type="submit" class="btn {{ 'btn-danger' if style == 'danger' else 'btn-primary' }}">
+            {{ label }}
+          </button>
+        </footer>
+      </form>
+    </div>
+  </div>
+</div>

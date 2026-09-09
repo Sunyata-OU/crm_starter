@@ -14,7 +14,7 @@ import asyncio
 from collections.abc import Sequence
 from datetime import date, timedelta
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, Request
 from starlette.responses import RedirectResponse, Response, StreamingResponse
@@ -254,6 +254,9 @@ async def _render_list(view: View, resource: Resource, spec: Any) -> Response:
         "views": resource.switchable_views(),
         "current_view": spec.name,
         "can_create": resource.can("create", view.identity),
+        # Actions that act on the screen rather than on a row: an import, a
+        # reconciliation, anything whose subject is the whole collection.
+        "list_actions": resource.actions_for("list", None, view.identity),
         "search_term": view.param("q"),
     }
     # An HTMX request re-renders only the table, so filtering and paging do not
@@ -1533,6 +1536,63 @@ async def create_record(
     return _after_write(view, resource, result, form, created=True)
 
 
+def _action_prompt(
+    view: View,
+    resource: Resource,
+    action: Any,
+    *,
+    post_url: str,
+    selected: Sequence[str] = (),
+    subject: str = "",
+    form: Any = None,
+    status_code: int = 200,
+) -> Response:
+    """The dialog that collects an action's parameters."""
+    from app.resources.form_engine import build_prompt_form
+
+    return view.render(
+        "views/_action_modal.html",
+        resource=resource,
+        status_code=status_code,
+        form=form if form is not None else build_prompt_form(resource, action.prompts(resource)),
+        title=action.label,
+        label=action.label,
+        style=action.style,
+        post_url=post_url,
+        selected=list(selected),
+        subject=subject,
+    )
+
+
+def _collect_params(
+    view: View, resource: Resource, action: Any, data: Any
+) -> tuple[dict[str, Any], Any]:
+    """Validate what the dialog submitted.
+
+    Returns the values and the form; the form carries the errors, so a caller
+    that gets a form with errors re-renders the dialog rather than running the
+    action with half a payload.
+    """
+    from app.core.errors import ValidationFailed
+    from app.fields.base import EMPTY
+    from app.resources.form_engine import process_prompt_form, was_submitted
+
+    fields = action.prompts(resource)
+    if not fields:
+        return {}, None
+    form = process_prompt_form(resource, fields, data, view.ctx)
+    if not form.valid:
+        return {}, form
+    # A dialog that was never shown submits nothing, and every field would then
+    # report itself missing rather than the caller being told to use the
+    # dialog. Distinguishing them keeps the error honest.
+    if not any(was_submitted(f, data) for f in fields):
+        raise ValidationFailed(
+            {action.name: f"{action.label} needs to be run from its dialog."}
+        )
+    return {name: value for name, value in form.values().items() if value is not EMPTY}, None
+
+
 # Declared before the per-record write routes below: /r/x/bulk/delete would
 # otherwise match /{resource_name}/{pk}/delete with pk='bulk'.
 @router.post("/{resource_name}/bulk/{action_name}")
@@ -1545,7 +1605,7 @@ async def run_bulk_action(
 
     form = await request.form()
     keys = [k for k in form.getlist("selected") if k]
-    if not keys:
+    if not keys and not _acts_on_the_screen(resource, action_name):
         empty: Response = view.render("views/_noop.html")
         return view.toast(empty, "Nothing was selected.", "warning")
 
@@ -1565,9 +1625,64 @@ async def run_bulk_action(
     if action.handler is None:
         raise ValidationFailed({action_name: "That action cannot be run over a selection."})
     allowed = [r for r in records if action.visible_for(r, view.identity)]
-    result = await action.handler(allowed, view.ctx, resource)
+
+    params: dict[str, Any] = {}
+    if action.prompts_for_input:
+        params, invalid = _collect_params(view, resource, action, form)
+        if invalid is not None:
+            return _action_prompt(
+                view, resource, action,
+                post_url=f"/r/{resource.name}/bulk/{action.name}",
+                selected=[str(r.pk) for r in allowed],
+                subject=f"{len(allowed)} selected.",
+                form=invalid, status_code=422,
+            )
+
+    result = await action.run(allowed, view.ctx, resource, params)
     return _after_action(
         view, resource, action, result, back=f"/r/{resource.name}", count=len(allowed)
+    )
+
+
+def _acts_on_the_screen(resource: Resource, action_name: str) -> bool:
+    """Whether this action runs with no selection behind it.
+
+    An import has no rows to act on -- the rows are what it creates -- so the
+    "nothing was selected" guard would refuse the only way to run it.
+    """
+    try:
+        return resource.action(action_name).shown_in("list")
+    except Exception:  # noqa: BLE001 -- an unknown action fails later, in one place
+        return False
+
+
+@router.get("/{resource_name}/bulk/{action_name}/prompt")
+async def bulk_action_prompt(
+    resource_name: str, action_name: str, request: Request, view: View = Depends(build_view)
+) -> Response:
+    """Ask for an action's parameters before running it over a selection."""
+    resource = view.resource(resource_name)
+    require_can(resource, "read", view.identity)
+    action = resource.action(action_name)
+    if not action.allowed_for(view.identity):
+        from app.core.errors import PermissionDenied
+
+        raise PermissionDenied(f"You cannot run {action.label!r}.")
+
+    selected = [k for k in request.query_params.getlist("selected") if k]
+    if selected:
+        subject = f"{len(selected)} selected."
+    elif action.shown_in("list"):
+        # Nothing is selected because nothing needs to be: this action's
+        # subject is the screen, not a set of rows.
+        subject = ""
+    else:
+        subject = "Nothing is selected."
+    return _action_prompt(
+        view, resource, action,
+        post_url=f"/r/{resource.name}/bulk/{action.name}",
+        selected=selected,
+        subject=subject,
     )
 
 
@@ -1822,8 +1937,74 @@ async def run_action(
     if action.url or action.handler is None:
         return view.redirect(action.resolve_url(record))
 
-    result = await action.handler([record], view.ctx, resource)
-    return _after_action(view, resource, action, result, back=f"/r/{resource.name}/{pk}")
+    params: dict[str, Any] = {}
+    if action.prompts_for_input:
+        params, invalid = _collect_params(view, resource, action, await request.form())
+        if invalid is not None:
+            return _action_prompt(
+                view, resource, action,
+                post_url=_action_url(view, resource, pk, action),
+                subject=resource.display_value(record),
+                form=invalid, status_code=422,
+            )
+
+    result = await action.run([record], view.ctx, resource, params)
+    return _after_action(
+        view, resource, action, result,
+        back=_return_to(view) or f"/r/{resource.name}/{pk}",
+    )
+
+
+def _return_to(view: View) -> str:
+    """Where the caller asked to be put back, if anywhere.
+
+    An action run from a row of somebody else's screen -- cancelling an
+    activity from the deal it hangs under, rather than from the activity's own
+    page -- should leave the reader where they were rather than on the record
+    it happened to act on. The screen says where that is, because only the
+    screen knows.
+
+    Only a path within this application is honoured. Anything else is dropped
+    rather than refused: a query parameter is a thing a link can carry, and one
+    that could redirect off-site would be an open redirect wearing a helpful
+    name. `//host` is rejected too -- the browser reads it as a URL with a host
+    and no scheme, so a leading slash alone does not make it local.
+    """
+    target = view.param("back") or ""
+    return target if target.startswith("/") and not target.startswith("//") else ""
+
+
+def _action_url(view: View, resource: Resource, pk: str, action: Any) -> str:
+    """Where an action's dialog posts to.
+
+    It carries the return target through, because the form is the only thing
+    between the button and the run and a dialog that dropped it would send the
+    reader to the record instead of back to the screen they were on.
+    """
+    url = f"/r/{resource.name}/{pk}/action/{action.name}"
+    back = _return_to(view)
+    return f"{url}?back={quote(back, safe='/')}" if back else url
+
+
+@router.get("/{resource_name}/{pk}/action/{action_name}/prompt")
+async def action_prompt(
+    resource_name: str, pk: str, action_name: str, view: View = Depends(build_view)
+) -> Response:
+    """Ask for an action's parameters before running it on one record."""
+    resource = view.resource(resource_name)
+    require_can(resource, "read", view.identity)
+    action = resource.action(action_name)
+    record = await _load(view, resource, pk)
+    if not action.visible_for(record, view.identity):
+        from app.core.errors import PermissionDenied
+
+        raise PermissionDenied(f"You cannot run {action.label!r} on this record.")
+
+    return _action_prompt(
+        view, resource, action,
+        post_url=_action_url(view, resource, pk, action),
+        subject=resource.display_value(record),
+    )
 
 
 def _after_action(
@@ -1835,9 +2016,20 @@ def _after_action(
     if view.wants_json:
         return view.json({"message": outcome.message, "level": outcome.level})
 
+    message = outcome.message or f"{action.label} applied to {count} record(s)."
+    if outcome.template:
+        # The action has more to say than a toast can hold -- a per-line import
+        # report, a file to take away. It renders in the modal, so the result
+        # stays on screen until it is read rather than fading after four
+        # seconds.
+        report: Response = view.render(
+            outcome.template, resource=resource, action=action,
+            message=message, level=outcome.level, **outcome.data,
+        )
+        return view.toast(report, message, outcome.level)
+
     target = outcome.redirect or (back if outcome.refresh else "")
     response: Response = view.redirect(target) if target else view.render("views/_noop.html")
-    message = outcome.message or f"{action.label} applied to {count} record(s)."
     return view.toast(response, message, outcome.level)
 
 

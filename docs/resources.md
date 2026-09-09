@@ -176,6 +176,59 @@ The same handler serves a row button, a detail-page button and a bulk
 operation — `records` is a list either way. `resource.registry` reaches other
 resources, so an action can write through a different provider entirely.
 
+### Asking for values first
+
+Most actions need something the record does not carry: why a deal was lost, how
+long a ban should run, what to put in the note. `prompt_fields` collects them in
+a dialog and hands them to the handler as `params`.
+
+```python
+@action("mark_lost", "Mark as lost", style="danger",
+        prompt_fields=[
+            SelectField("lost_reason", label="Reason", choices=LOST_REASONS,
+                        required=True),
+            TextAreaField("lost_note", label="Note", rows=3),
+        ])
+async def mark_lost(records, ctx, resource, *, params):
+    reason = params["lost_reason"]
+    ...
+```
+
+Fields are declared inline, as above, or named as strings when the value *is* a
+column on the resource (`prompt_fields=["owner"]`). They are coerced and
+validated by the field itself, so a bad date comes back in the dialog with the
+error next to it rather than reaching the handler.
+
+Only a handler that declares `params` is given them — an action without prompts
+keeps the three-argument signature, and existing handlers need no change.
+
+### Reporting a batch honestly
+
+A bulk action over forty records is forty separate attempts, usually against
+something remote. `RowOutcome` says what became of each, and `from_outcomes`
+turns that into a message with the right level:
+
+```python
+outcomes = [RowOutcome(r.pk, ok, message) for r in records]
+return ActionResult.from_outcomes(outcomes, done="Cancelled")
+```
+
+All succeeded reads as a success; a mixed batch is a **warning** that names the
+first few failures and their reasons; everything failing is an **error** that
+does not refresh the list.
+
+When the answer is too big or too important to fade, set `template` and the
+result renders in the modal instead of as a toast — a per-row report, a file to
+take away — staying on screen until it is dismissed:
+
+```python
+result = ActionResult.from_outcomes(outcomes, done="Imported")
+result.template = "views/_action_report.html"
+result.data = {"headings": ["Email", "Result"], "rows": rows}
+return result
+``` The alternative — one "Done." over a batch where
+three rows were refused — is the kind of thing people discover a week later.
+
 ## Policies
 
 ```python

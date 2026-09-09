@@ -1,0 +1,64 @@
+{#
+  A table of records being entered at once.
+
+  Every cell is the ordinary input for its column, so a select is a select and
+  a date is a date picker -- the point of the grid is that it is the form, not
+  a text area pretending to be a spreadsheet.
+
+  The file picker fills the table and is never submitted: `crm.gridFromCsv`
+  reads it in the browser and appends rows. That keeps "the form is what is
+  sent" true even when the starting point was a file somebody was emailed.
+#}
+{% import "macros/fields.html" as f with context %}
+{% set grid = bound.field %}
+{% set rows = bound.value if bound.value is iterable and bound.value is not string else [] %}
+
+<div class="grid-field" data-grid="{{ grid.name }}">
+  <div class="grid-toolbar">
+    <label class="btn btn-sm">
+      Fill from CSV
+      <input type="file" accept=".csv,text/csv" hidden
+             onchange="crm.gridFromCsv(this)">
+    </label>
+    <button type="button" class="btn btn-sm" onclick="crm.gridAddRow(this)">Add row</button>
+    <span class="muted grid-hint">
+      Columns are matched by name, so a file with extra columns is fine.
+    </span>
+  </div>
+
+  <div class="grid-scroll">
+  <table class="table grid-table">
+    <thead>
+      <tr>
+        {% for column in grid.columns %}
+          <th scope="col">
+            {{ column.label }}{% if column.required %} <span aria-hidden="true">*</span>{% endif %}
+            {% if column.help %}<span class="muted grid-help">{{ column.help }}</span>{% endif %}
+          </th>
+        {% endfor %}
+        <th scope="col"><span class="visually-hidden">Remove</span></th>
+      </tr>
+    </thead>
+    <tbody data-grid-body>
+      {% for row in rows %}
+        <tr>
+          {% for column in grid.columns %}
+            <td>{{ f.grid_cell(grid, column, row.get(column.name)) }}</td>
+          {% endfor %}
+          <td><button type="button" class="icon-button" aria-label="Remove row"
+                      onclick="crm.gridRemoveRow(this)">×</button></td>
+        </tr>
+      {% endfor %}
+      {% for _ in range(grid.min_rows - rows|length if grid.min_rows > rows|length else 0) %}
+        <tr>
+          {% for column in grid.columns %}
+            <td>{{ f.grid_cell(grid, column, None) }}</td>
+          {% endfor %}
+          <td><button type="button" class="icon-button" aria-label="Remove row"
+                      onclick="crm.gridRemoveRow(this)">×</button></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>

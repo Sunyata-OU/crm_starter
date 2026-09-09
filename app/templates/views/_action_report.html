@@ -1,0 +1,52 @@
+{#
+  What an action did, when a toast is not enough to hold it.
+
+  Used by the bulk imports: they report per line, and one of them hands back a
+  file. A toast fades after a few seconds, which is the wrong lifetime for
+  either -- so this stays in the modal until it is dismissed.
+#}
+<div class="modal-backdrop" onclick="if (event.target === this) crm.closeModal()">
+  <div class="modal-dialog" role="dialog" aria-modal="true" aria-label="{{ action.label }}">
+    <header class="modal-head">
+      <h2>{{ action.label }}</h2>
+      <button class="icon-button" type="button" aria-label="Close"
+              onclick="crm.closeModal()">×</button>
+    </header>
+    <div class="modal-body">
+      <div class="alert alert-{{ 'error' if level == 'error' else level }}" role="status">
+        {{ message }}
+      </div>
+
+      {% if download %}
+        {# A data URL rather than a stored file: this application keeps no
+           state, and the payload is credentials -- writing them to disk or to
+           a log to hand over later is exactly what should not happen. It
+           reaches the browser once, from memory. #}
+        <p>
+          <a class="btn btn-primary" download="{{ download.filename }}"
+             href="data:{{ download.mime }};base64,{{ download.base64 }}">
+            Download {{ download.filename }}
+          </a>
+        </p>
+        {% if download.warning %}<p class="section-help">{{ download.warning }}</p>{% endif %}
+      {% endif %}
+
+      {% if rows %}
+        <table class="table">
+          <thead>
+            <tr>{% for heading in headings %}<th>{{ heading }}</th>{% endfor %}</tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      <footer class="form-actions">
+        <button type="button" class="btn btn-primary" onclick="crm.closeModal()">Close</button>
+      </footer>
+    </div>
+  </div>
+</div>

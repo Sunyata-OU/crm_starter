@@ -388,6 +388,134 @@
     };
   };
 
+  /* -- row grids -----------------------------------------------------------
+     A `rows` field is a table of ordinary inputs. Adding and removing rows is
+     DOM work, and filling from a CSV is a convenience: the file is read here
+     and thrown away, so what the server receives is always the table. */
+
+  function gridOf(el) {
+    return el.closest(".grid-field");
+  }
+
+  crm.gridAddRow = function (button, values) {
+    const grid = gridOf(button);
+    const body = grid.querySelector("[data-grid-body]");
+    const template = body.rows[0];
+    if (!template) return null;
+    const row = template.cloneNode(true);
+    row.querySelectorAll("input, select").forEach(function (input) {
+      // A cloned row must start empty, or "add row" would duplicate whatever
+      // the first row happens to say.
+      const name = (input.name || "").split(".").pop();
+      const value = values && Object.prototype.hasOwnProperty.call(values, name)
+        ? values[name] : "";
+      if (input.tagName === "SELECT") {
+        input.value = value;
+        if (input.value !== String(value)) input.selectedIndex = 0;
+      } else {
+        input.value = value;
+      }
+    });
+    body.appendChild(row);
+    return row;
+  };
+
+  crm.gridRemoveRow = function (button) {
+    const row = button.closest("tr");
+    const body = row.parentNode;
+    // The last row is emptied rather than removed: with no rows there would be
+    // nothing to clone from, and no way back to a usable grid.
+    if (body.rows.length === 1) {
+      row.querySelectorAll("input, select").forEach(function (input) { input.value = ""; });
+      return;
+    }
+    row.remove();
+  };
+
+  /* Minimal RFC-4180 reader: quoted fields, "" escapes, CRLF or LF. Matches
+     what the services accept, so a file that loads here is a file they would
+     have parsed the same way. */
+  function parseCsv(text) {
+    const rows = [];
+    let row = [];
+    let field = "";
+    let quoted = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (quoted) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; } else { quoted = false; }
+        } else { field += ch; }
+        continue;
+      }
+      if (ch === '"') { quoted = true; }
+      else if (ch === ",") { row.push(field); field = ""; }
+      else if (ch === "\n" || ch === "\r") {
+        if (ch === "\r" && text[i + 1] === "\n") i++;
+        row.push(field); field = "";
+        if (row.some(function (c) { return c.trim() !== ""; })) rows.push(row);
+        row = [];
+      } else { field += ch; }
+    }
+    row.push(field);
+    if (row.some(function (c) { return c.trim() !== ""; })) rows.push(row);
+    return rows;
+  }
+
+  function normalise(name) {
+    return String(name).trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+
+  crm.gridFromCsv = function (input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const grid = gridOf(input);
+    const reader = new FileReader();
+    reader.onload = function () {
+      const rows = parseCsv(String(reader.result));
+      if (rows.length < 2) {
+        crm.toast("That file has a header but no rows.", "warning");
+        input.value = "";
+        return;
+      }
+      // Matched by name, loosely: a file exported by another system spells
+      // `idCode` and one written by hand spells `id_code`, and both mean the
+      // column this grid calls `idCode`.
+      const columns = Array.prototype.map.call(
+        grid.querySelectorAll("[data-grid-body] tr:first-child input, " +
+                              "[data-grid-body] tr:first-child select"),
+        function (el) { return (el.name || "").split(".").pop(); }
+      );
+      const header = rows[0].map(normalise);
+      const body = grid.querySelector("[data-grid-body]");
+      const blank = Array.prototype.every.call(
+        body.rows[0].querySelectorAll("input, select"),
+        function (el) { return !el.value; }
+      );
+      const button = grid.querySelector("[onclick*='gridAddRow']");
+
+      rows.slice(1).forEach(function (cells, index) {
+        const values = {};
+        columns.forEach(function (column) {
+          const at = header.indexOf(normalise(column));
+          if (at !== -1) values[column] = (cells[at] || "").trim();
+        });
+        if (index === 0 && blank) {
+          body.rows[0].querySelectorAll("input, select").forEach(function (el) {
+            const name = (el.name || "").split(".").pop();
+            if (name in values) el.value = values[name];
+          });
+        } else {
+          crm.gridAddRow(button, values);
+        }
+      });
+      crm.toast((rows.length - 1) + " row(s) loaded. Check them before saving.", "info");
+      // Cleared so re-picking the same file fires `change` again.
+      input.value = "";
+    };
+    reader.readAsText(file);
+  };
+
   /* -- theme -------------------------------------------------------------- */
 
   crm.toggleTheme = function () {

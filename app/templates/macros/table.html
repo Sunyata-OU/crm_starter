@@ -23,6 +23,30 @@
   </a>
 {% endmacro %}
 
+{#
+  One action button, for a row.
+
+  Shared with the related lists on a detail page, which is why it takes an
+  action rather than a name and a `back` rather than assuming it: an action
+  fired from a row of an embedded table has to return the reader to the page
+  the table was on, not to the record it acted on.
+#}
+{% macro action_button(resource, record, action, back='') %}
+  {%- set query = ('?back=' ~ back|urlencode) if back else '' -%}
+  {# An action that needs values opens its dialog; one that does
+     not still fires straight from the row. #}
+  <button class="btn btn-sm {{ 'btn-danger' if action.style == 'danger' }}"
+          {% if action.prompts_for_input %}
+          hx-get="/r/{{ resource.name }}/{{ record.pk }}/action/{{ action.name }}/prompt{{ query }}"
+          hx-target="#modal" hx-swap="innerHTML"
+          {% else %}
+          hx-post="/r/{{ resource.name }}/{{ record.pk }}/action/{{ action.name }}{{ query }}"
+          {% if action.confirm %}hx-confirm="{{ action.confirm }}"{% endif %}
+          {% endif %}>
+    {{ action.label }}
+  </button>
+{% endmacro %}
+
 {% macro table(resource, page, columns, spec, request, templates, can_update=false, current_sort='') %}
 <div class="table-wrap">
   {#
@@ -95,11 +119,7 @@
               {% for name in spec.row_actions %}
                 {% set action = resource.actions.get(name) %}
                 {% if action and action.visible_for(record, identity) %}
-                  <button class="btn btn-sm {{ 'btn-danger' if action.style == 'danger' }}"
-                          hx-post="/r/{{ resource.name }}/{{ record.pk }}/action/{{ action.name }}"
-                          {% if action.confirm %}hx-confirm="{{ action.confirm }}"{% endif %}>
-                    {{ action.label }}
-                  </button>
+                  {{ action_button(resource, record, action) }}
                 {% endif %}
               {% endfor %}
             </td>

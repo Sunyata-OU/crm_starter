@@ -787,6 +787,9 @@ body.htmx-request::after {
   padding: .85rem 1rem; border-bottom: 1px solid var(--border);
 }
 .modal-head h2 { margin: 0; font-size: 1rem; }
+/* Wide enough for a table of inputs. Capped at the viewport so it never
+   reaches past the edge, and the grid inside scrolls rather than pushing. */
+.modal-dialog.modal-wide { width: min(1180px, 100%); }
 .modal-body { padding: 1rem; }
 /* The form inside a dialog supplies its own frame already. */
 .modal-body .record-form { border: 0; padding: 0; box-shadow: none; background: none; }
@@ -905,3 +908,29 @@ body.htmx-request::after {
   .dash-panel { grid-column: span 1; }
   .gantt-label-col { flex-basis: 8rem; }
 }
+
+/* -- row grids ------------------------------------------------------------
+   A table of inputs, one row per record being entered. It scrolls sideways
+   inside the dialog: eight columns of legible inputs are wider than any
+   dialog should be, and squeezing them is worse than scrolling. */
+
+.grid-field { display: grid; gap: .5rem; }
+.grid-toolbar { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.grid-toolbar .grid-hint { font-size: .78rem; }
+/* The scroll lives on a wrapper, never on the grid itself. Turning one into
+   blocks is what the responsive pivot below does, and doing the same here
+   would stack this one on a narrow screen instead of scrolling it. */
+.grid-scroll { overflow-x: auto; }
+.grid-table thead th {
+  white-space: nowrap; vertical-align: bottom; font-size: .78rem;
+}
+.grid-table th .grid-help {
+  display: block; font-weight: 400; font-size: .7rem; white-space: nowrap;
+}
+.grid-table td { padding: .25rem; }
+.grid-table input, .grid-table select {
+  width: 100%; min-width: 8.5rem; padding: .35rem .45rem;
+  border: 1px solid var(--border); border-radius: var(--radius-sm, 4px);
+  background: var(--surface); color: inherit; font: inherit; font-size: .85rem;
+}
+.grid-table td:last-child { width: 1%; }
