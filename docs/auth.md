@@ -159,13 +159,41 @@ on the System page.
 ### API tokens
 
 ```bash
-uv run crm token ci-runner --roles user
+uv run crm token ci-runner --roles user --expires-in-days 90
 ```
 
-Shown once; only the SHA-256 hash is stored. SHA-256 rather than Argon2 is
-deliberate: a 256-bit random token has nothing to brute-force, and it is
-verified on every API request, where a deliberately slow hash is a
+or, from the Administration → API tokens screen, **Issue a token**. Either way
+the value is shown once; only the SHA-256 hash is stored. SHA-256 rather than
+Argon2 is deliberate: a 256-bit random token has nothing to brute-force, and it
+is verified on every API request, where a deliberately slow hash is a
 self-inflicted denial of service.
+
+There is no ordinary create form on that screen, and there cannot be: a row
+typed in by hand would have no hash behind it — a credential that authenticates
+nobody and looks exactly like one that works.
+
+**Expiry.** `expires_at` is empty for a token that never expires. That stays
+possible and stays a decision: the CLI and the screen both default to a finite
+lifetime, because the failure mode of an expiring token is an integration that
+stops and gets fixed, while the failure mode of an immortal one is a credential
+still working years after the laptop it was pasted on was sold. An expired
+token is refused with exactly the message an unknown one gets — telling a
+caller that their token exists but has lapsed tells somebody holding a guessed
+value that they guessed right.
+
+**Rotation.** *Rotate* issues a new value for an existing token and shows it
+once. The row survives, because its label, roles and history are the reason to
+keep it; the old value stops working at the instant the new one starts, so
+there is no window in which both are valid and none in which neither is.
+
+**Where it was used.** Each authenticated call records `last_used` and
+`last_used_ip`, but not on every request: a token used continuously is written
+at most every fifteen minutes, since the question the columns answer does not
+need minute-by-minute resolution and the API's whole point is being cheap to
+call. A *changed* address is written immediately, because that is the
+observation somebody might act on. `X-Forwarded-For` is believed only where
+`CRM_PROXY_TRUSTED_IPS` names a proxy — the same rule the audit log applies —
+and a failed recording never fails the call it was describing.
 
 Bearer-authenticated requests are exempt from CSRF, since they carry no ambient
 cookie credentials for a cross-site form to forge.

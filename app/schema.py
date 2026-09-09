@@ -90,7 +90,20 @@ api_tokens = Table(
     Column("roles", String(255), default="[]"),
     Column("is_active", Boolean, default=True, nullable=False),
     Column("meta", Text),
+    # When it stops working. Null means never, which stays an explicit choice
+    # -- a token that outlives the integration it was made for is a credential
+    # nobody remembers to revoke, and the only guard against that is a date
+    # somebody had to decide not to set.
+    Column("expires_at", Instant, index=True),
+    # Where it was last used, as well as when. Two columns rather than one,
+    # because "this token was used at 3am" is only alarming once you know it
+    # came from an address the integration has never used.
     Column("last_used", Instant),
+    Column("last_used_ip", String(64)),
+    # Set when a token's value is replaced. The row survives a rotation --
+    # its label, its roles and its history are the reason to keep it -- so
+    # without this there is nothing to say the secret itself changed.
+    Column("rotated_at", Instant),
     *timestamps(),
 )
 

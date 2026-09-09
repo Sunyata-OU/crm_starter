@@ -12,16 +12,31 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import secrets
+from datetime import datetime, timedelta
 
 from starlette.requests import Request
 
 from app.auth.base import AuthError, BaseAuthProvider
+from app.core.clock import parse as parse_instant
+from app.core.clock import utcnow
 from app.core.query import Condition, ListQuery, Op
 from app.core.results import Ctx, Identity, Record
 from app.providers.base import Provider
 
+log = logging.getLogger("crm.auth")
+
 TOKEN_PREFIX = "crm_"
+
+#: How stale ``last_used`` is allowed to get before it is written again.
+#:
+#: Recording every single call would put a write on the hot path of an API
+#: whose whole point is being cheap to call, and the question the column
+#: answers -- "is this token still in use, and from where?" -- is not one that
+#: needs minute-by-minute resolution. A changed address is written immediately
+#: regardless, because that is the observation somebody might act on.
+TOUCH_AFTER = timedelta(minutes=15)
 
 
 def generate_token() -> str:
@@ -52,16 +67,24 @@ class ApiTokenAuth(BaseAuthProvider):
         subject_field: str = "name",
         roles_field: str = "roles",
         active_field: str = "is_active",
+        expires_field: str = "expires_at",
         header: str = "Authorization",
         scheme: str = "Bearer",
+        #: Believe ``X-Forwarded-For`` when recording where a token was used.
+        #: Off unless the deployment has said it trusts its proxy, on the same
+        #: reasoning as the audit log's address: an untrusted header lets a
+        #: caller write its own origin into the record of its own calls.
+        trust_forwarded_for: bool = False,
     ) -> None:
         self.tokens = tokens
         self.hash_field = hash_field
         self.subject_field = subject_field
         self.roles_field = roles_field
         self.active_field = active_field
+        self.expires_field = expires_field
         self.header = header
         self.scheme = scheme
+        self.trust_forwarded_for = trust_forwarded_for
 
     def extract_token(self, request: Request) -> str | None:
         raw = request.headers.get(self.header, "")
@@ -80,10 +103,16 @@ class ApiTokenAuth(BaseAuthProvider):
             return None
 
         record = await self._lookup(hash_token(token))
-        if record is None or not self._is_active(record):
+        if record is None or not self._is_active(record) or self._has_expired(record):
             # A token *was* presented and is not valid. Raising stops the chain
             # so a bad token cannot fall through to an anonymous read.
+            #
+            # One message for all three cases, deliberately. Telling a caller
+            # that their token exists but has expired is telling somebody
+            # holding a guessed value that they guessed right.
             raise AuthError("That API token is not valid.", provider=self.name)
+
+        await self._record_use(record, self._caller_ip(request))
 
         from app.auth.local import _parse_roles
 
@@ -113,3 +142,47 @@ class ApiTokenAuth(BaseAuthProvider):
     def _is_active(self, record: Record) -> bool:
         value = record.get(self.active_field, True)
         return value if isinstance(value, bool) else str(value).lower() not in ("0", "false", "no")
+
+    def _has_expired(self, record: Record, now: datetime | None = None) -> bool:
+        """Whether this token's date has passed. No date means it has not.
+
+        Unparseable is treated as expired. A column holding something this
+        cannot read is a column nobody can reason about, and the safe reading
+        of an unreadable expiry date is that the credential is not usable.
+        """
+        raw = record.get(self.expires_field)
+        if not raw:
+            return False
+        expires = parse_instant(raw)
+        if expires is None:
+            log.warning("api token %s has an unreadable expiry %r", record.pk, raw)
+            return True
+        return expires <= (now or utcnow())
+
+    def _caller_ip(self, request: Request) -> str:
+        if self.trust_forwarded_for:
+            forwarded = request.headers.get("x-forwarded-for", "")
+            if forwarded:
+                return forwarded.split(",")[0].strip()[:64]
+        client = request.client
+        return client.host[:64] if client else ""
+
+    async def _record_use(self, record: Record, ip: str) -> None:
+        """Note that this token was used, and from where.
+
+        Never allowed to fail the request it is describing: a token that works
+        must not stop working because the bookkeeping write did not land. The
+        write is skipped entirely while the record is fresh -- see
+        ``TOUCH_AFTER`` -- so the common case costs nothing.
+        """
+        now = utcnow()
+        last = parse_instant(record.get("last_used"))
+        moved = ip and str(record.get("last_used_ip") or "") != ip
+        if last is not None and not moved and now - last < TOUCH_AFTER:
+            return
+        try:
+            await self.tokens.update(
+                record.pk, {"last_used": now, "last_used_ip": ip or None}, Ctx.system()
+            )
+        except Exception:
+            log.warning("could not record the use of api token %s", record.pk, exc_info=True)

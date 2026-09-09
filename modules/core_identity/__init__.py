@@ -12,9 +12,13 @@ step with the rest of the application.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from app.auth import current as auth
 from app.auth.base import PasswordsNotManaged
 from app.auth.local import generate_password
+from app.core import clock
+from app.core.clock import utcnow
 from app.core.registry import Registry
 from app.core.results import Ctx
 from app.fields.types import (
@@ -178,8 +182,13 @@ def _users() -> Resource:
 def _api_tokens() -> Resource:
     """Machine credentials for the JSON API.
 
-    Only the hash is stored, so this resource can never show a usable token --
-    which is why there is no create form here; use ``crm token`` instead.
+    Only the hash is stored, so a token's value can never be looked up here --
+    it is shown once, by the action that issues it, and after that this screen
+    can say everything about the credential except what it is.
+
+    The ordinary create form is off for the same reason: a row typed in by hand
+    would have no hash behind it, which is a credential that authenticates
+    nobody and looks exactly like one that works.
     """
     return Resource(
         "api_tokens",
@@ -191,6 +200,7 @@ def _api_tokens() -> Resource:
         display_field="name",
         default_sort=["-created_at"],
         policy=RolePolicy(read=["admin"], write=["admin"]),
+        actions=[issue_token, rotate_token],
         fields=[
             TextField("id", label="ID", in_form=False, in_list=False, in_detail=False),
             TextField("name", required=True, searchable=True, label="Label"),
@@ -198,8 +208,171 @@ def _api_tokens() -> Resource:
                       read_roles=["nobody"]),
             MultiSelectField("roles", choices=ROLES),
             BooleanField("is_active", label="Active", default=True, inline_editable=True),
+            DateTimeField("expires_at", label="Expires", in_filter=True,
+                          help="Leave empty for a token that never expires -- "
+                               "which should be a decision, not an oversight."),
             JSONField("meta", label="Metadata"),
             DateTimeField("last_used", label="Last used", readonly=True, in_form=False),
+            TextField("last_used_ip", label="Last used from", readonly=True,
+                      in_form=False, in_list=False),
+            DateTimeField("rotated_at", label="Rotated", readonly=True, in_form=False,
+                          in_list=False),
             DateTimeField("created_at", label="Created", readonly=True, in_form=False),
         ],
+        views=[
+            ListView(
+                columns=[
+                    Column("name", label="Label", link=True, width="26%"),
+                    "roles", "is_active",
+                    Column("expires_at", label="Expires", width="14%"),
+                    Column("last_used", label="Last used", width="14%"),
+                ],
+                default_sort=["-created_at"],
+                row_actions=["rotate_token"],
+                empty_message="No API tokens yet.",
+            ),
+            DetailView(
+                sections=[
+                    Section("Token", ["name", "roles", "is_active", "expires_at"], columns=2),
+                    Section("Use", ["last_used", "last_used_ip", "rotated_at",
+                                    "created_at"], columns=2),
+                    Section("Metadata", ["meta"], columns=1),
+                ],
+            ),
+        ],
+    )
+
+
+#: How long a token lasts when nobody says otherwise.
+#:
+#: A default rather than "forever", because the failure mode of an expiring
+#: token is an integration that stops and gets fixed, while the failure mode of
+#: an immortal one is a credential still working years after the laptop it was
+#: pasted on was sold.
+DEFAULT_TOKEN_DAYS = 365
+
+
+@action(
+    "issue_token",
+    "Issue a token",
+    icon="⚿",
+    placements=("list",),
+    roles=("admin",),
+    prompt_fields=[
+        TextField("token_name", label="Label", required=True,
+                  help="What holds it -- 'tasky', 'the reconciliation script'. "
+                       "This is what somebody reads when deciding to revoke it."),
+        MultiSelectField("token_roles", label="Roles", choices=ROLES),
+        TextField("expires_in_days", label="Expires in (days)",
+                  default=str(DEFAULT_TOKEN_DAYS),
+                  help="Empty for a token that never expires."),
+    ],
+)
+async def issue_token(records, ctx: Ctx, resource: Resource, *, params) -> ActionResult:
+    """Create a token and show its value, once.
+
+    Once is the whole design: only the hash is stored, so this modal is the
+    single moment the value exists anywhere outside the caller's memory. It is
+    reported through the report template rather than a toast because a toast
+    fades, and a credential that faded before it was copied means doing this
+    again and wondering whether the first one is still live somewhere.
+    """
+    from app.auth.api_token import generate_token, hash_token
+
+    label = str(params.get("token_name") or "").strip()
+    if not label:
+        return ActionResult(message="Give the token a label.", level="error", refresh=False)
+
+    expires_at, problem = _expiry_from(params.get("expires_in_days"))
+    if problem:
+        return ActionResult(message=problem, level="error", refresh=False)
+
+    raw = generate_token()
+    result = await resource.provider.create(
+        {
+            "name": label,
+            "token_hash": hash_token(raw),
+            "roles": params.get("token_roles") or [],
+            "is_active": True,
+            "expires_at": expires_at,
+        },
+        ctx,
+    )
+    if result.failed:
+        return ActionResult(message=result.message or "The token could not be created.",
+                            level="error", refresh=False)
+
+    return _token_report(raw, label, expires_at, verb="Issued")
+
+
+@action(
+    "rotate_token",
+    "Rotate",
+    icon="↻",
+    placements=("row", "detail"),
+    roles=("admin",),
+    confirm="Issue a new value for this token? The current one stops working immediately.",
+)
+async def rotate_token(records, ctx: Ctx, resource: Resource) -> ActionResult:
+    """Replace a token's value, keeping the row.
+
+    The row is worth keeping -- its label, its roles and when it was last used
+    are the history somebody needs -- and the secret is not. Replacing the hash
+    invalidates the old value at the same instant the new one starts working,
+    so there is no window in which both are valid and no window in which
+    neither is.
+    """
+    from app.auth.api_token import generate_token, hash_token
+
+    if len(records) != 1:
+        return ActionResult(
+            message="Rotate one token at a time, so each new value can be read back.",
+            level="warning", refresh=False,
+        )
+
+    record = records[0]
+    raw = generate_token()
+    result = await resource.provider.update(
+        record.pk, {"token_hash": hash_token(raw), "rotated_at": utcnow()}, ctx
+    )
+    if result.failed:
+        return ActionResult(message=result.message or "The token could not be rotated.",
+                            level="error", refresh=False)
+
+    return _token_report(
+        raw, str(record.get("name") or "this token"),
+        clock.parse(record.get("expires_at")), verb="Rotated",
+    )
+
+
+def _expiry_from(value: object) -> tuple[datetime | None, str]:
+    """Read the prompt's "days" box. Returns the instant, or why it was refused."""
+    text = str(value or "").strip()
+    if not text:
+        return None, ""
+    try:
+        days = int(text)
+    except ValueError:
+        return None, f"{text!r} is not a number of days."
+    if days <= 0:
+        return None, "A token has to last at least a day."
+    return utcnow() + timedelta(days=days), ""
+
+
+def _token_report(
+    raw: str, label: str, expires_at: datetime | None, *, verb: str
+) -> ActionResult:
+    """The one showing of a token's value."""
+    when = f"It expires on {expires_at:%d %b %Y}." if expires_at else "It never expires."
+    return ActionResult(
+        message=(
+            f"{verb} {label}. Copy this value now -- only its hash is stored, "
+            f"so it cannot be shown again. {when}"
+        ),
+        level="info",
+        template="views/_action_report.html",
+        data={
+            "headings": ("Token",),
+            "rows": ((raw,),),
+        },
     )

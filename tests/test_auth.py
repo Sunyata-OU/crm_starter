@@ -8,6 +8,8 @@ through to anonymous access.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from starlette.requests import Request
 from starlette.responses import Response
@@ -19,6 +21,7 @@ from app.auth.local import LocalPasswordAuth, hash_password, verify_password
 from app.auth.oidc import DevAuth, OIDCAuth
 from app.auth.proxy_header import ProxyHeaderAuth
 from app.auth.session import SessionStore
+from app.core.clock import utcnow
 from app.core.results import ANONYMOUS, Identity
 from app.providers.memory import MemoryProvider
 
@@ -176,6 +179,133 @@ class TestApiTokenAuth:
         first, second = generate_token(), generate_token()
         assert first != second
         assert first.startswith("crm_")
+
+
+class TestApiTokenLifetime:
+    """A credential that never dies is one nobody revokes.
+
+    So a token may carry a date, an expired one is refused exactly as an
+    unknown one is -- telling a caller their guess exists but has lapsed tells
+    them their guess was right -- and each use records enough to notice a token
+    being used from somewhere it never was before.
+    """
+
+    @pytest.fixture
+    def store(self):
+        return MemoryProvider([])
+
+    def _token(self, store, value, **overrides):
+        row = {
+            "id": 1, "name": "tasky", "token_hash": hash_token(value),
+            "roles": ["user"], "is_active": True, "expires_at": None,
+            "last_used": None, "last_used_ip": None,
+        }
+        row.update(overrides)
+        store._rows[1] = row
+        return ApiTokenAuth(store)
+
+    async def test_a_token_with_no_date_keeps_working(self, store):
+        value = generate_token()
+        auth = self._token(store, value)
+        identity = await auth.authenticate(
+            make_request(headers={"Authorization": f"Bearer {value}"})
+        )
+        assert identity.subject == "tasky"
+
+    async def test_one_whose_date_has_passed_is_refused(self, store):
+        value = generate_token()
+        auth = self._token(store, value, expires_at=utcnow() - timedelta(minutes=1))
+        with pytest.raises(AuthError):
+            await auth.authenticate(make_request(headers={"Authorization": f"Bearer {value}"}))
+
+    async def test_one_expiring_later_still_works(self, store):
+        value = generate_token()
+        auth = self._token(store, value, expires_at=utcnow() + timedelta(days=1))
+        identity = await auth.authenticate(
+            make_request(headers={"Authorization": f"Bearer {value}"})
+        )
+        assert identity is not None
+
+    async def test_an_unreadable_date_is_treated_as_expired(self, store):
+        # The safe reading of a column nobody can parse is that the credential
+        # is not usable, not that it is eternal.
+        value = generate_token()
+        auth = self._token(store, value, expires_at="not a date")
+        with pytest.raises(AuthError):
+            await auth.authenticate(make_request(headers={"Authorization": f"Bearer {value}"}))
+
+    async def test_the_refusal_does_not_say_which_reason(self, store):
+        value = generate_token()
+        auth = self._token(store, value, expires_at=utcnow() - timedelta(days=1))
+        with pytest.raises(AuthError) as expired:
+            await auth.authenticate(make_request(headers={"Authorization": f"Bearer {value}"}))
+        with pytest.raises(AuthError) as unknown:
+            await auth.authenticate(
+                make_request(headers={"Authorization": "Bearer crm_never-existed"})
+            )
+        assert str(expired.value) == str(unknown.value)
+
+    async def test_use_is_recorded_with_the_address(self, store):
+        value = generate_token()
+        auth = self._token(store, value)
+        await auth.authenticate(
+            make_request(headers={"Authorization": f"Bearer {value}"}, client=("10.1.2.3", 9))
+        )
+        assert store._rows[1]["last_used"] is not None
+        assert store._rows[1]["last_used_ip"] == "10.1.2.3"
+
+    async def test_a_recent_use_is_not_written_again(self, store):
+        # The bookkeeping must not put a write on the hot path of every call.
+        value = generate_token()
+        auth = self._token(
+            store, value, last_used=utcnow(), last_used_ip="10.1.2.3"
+        )
+        before = store._rows[1]["last_used"]
+        await auth.authenticate(
+            make_request(headers={"Authorization": f"Bearer {value}"}, client=("10.1.2.3", 9))
+        )
+        assert store._rows[1]["last_used"] == before
+
+    async def test_but_a_new_address_is_written_immediately(self, store):
+        value = generate_token()
+        auth = self._token(store, value, last_used=utcnow(), last_used_ip="10.1.2.3")
+        await auth.authenticate(
+            make_request(headers={"Authorization": f"Bearer {value}"}, client=("10.9.9.9", 9))
+        )
+        assert store._rows[1]["last_used_ip"] == "10.9.9.9"
+
+    async def test_a_forwarded_address_is_ignored_unless_a_proxy_is_trusted(self, store):
+        value = generate_token()
+        auth = self._token(store, value)
+        await auth.authenticate(make_request(
+            headers={"Authorization": f"Bearer {value}", "X-Forwarded-For": "8.8.8.8"},
+            client=("10.0.0.1", 9),
+        ))
+        assert store._rows[1]["last_used_ip"] == "10.0.0.1"
+
+    async def test_and_believed_when_one_is(self, store):
+        value = generate_token()
+        auth = self._token(store, value)
+        auth.trust_forwarded_for = True
+        await auth.authenticate(make_request(
+            headers={"Authorization": f"Bearer {value}", "X-Forwarded-For": "8.8.8.8, 10.0.0.1"},
+            client=("10.0.0.1", 9),
+        ))
+        assert store._rows[1]["last_used_ip"] == "8.8.8.8"
+
+    async def test_a_failed_recording_does_not_fail_the_call(self, store):
+        # A token that works must not stop working because bookkeeping did not.
+        value = generate_token()
+        auth = self._token(store, value)
+
+        async def refuse(*_args, **_kwargs):
+            raise RuntimeError("the database is down")
+
+        auth.tokens.update = refuse
+        identity = await auth.authenticate(
+            make_request(headers={"Authorization": f"Bearer {value}"})
+        )
+        assert identity is not None
 
 
 # -- proxy headers ---------------------------------------------------------
