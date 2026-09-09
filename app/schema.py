@@ -1,4 +1,4 @@
-"""The platform schema: accounts, access control, audit and notifications.
+"""The platform schema: accounts, access control, audit, notes and tasks.
 
 Only tables the framework itself needs live here. Business tables belong to the
 module that declares them -- see ``modules/demo_crm/schema.py`` for the shape --
@@ -108,7 +108,12 @@ api_tokens = Table(
 )
 
 
-#: Written by the timeline when a record changes.
+#: What people have said about a record, as opposed to what they did to it.
+#:
+#: The audit log already answers "what changed"; this answers "why", which no
+#: diff can. One row is one note against one record, addressed the way a
+#: notification is -- by resource name and record id as strings -- so a note
+#: can hang off a record this application does not own and cannot write to.
 timeline_entries = Table(
     "timeline_entries", metadata,
     Column("id", Integer, primary_key=True),
@@ -116,8 +121,30 @@ timeline_entries = Table(
     Column("record_id", String(60), nullable=False, index=True),
     Column("kind", String(20), default="note"),
     Column("body", Text),
+    # Who wrote it, twice over: the name to show, and the identifier to match
+    # on. A display name changes and is not unique, so "may I delete this?"
+    # and "who else is following this record?" both have to ask the second.
     Column("author", String(120)),
+    Column("author_id", String(160), index=True),
+    # Whom the note names, as a JSON array of recipient identifiers. Kept on
+    # the row rather than re-parsed from the body, so a rename of a person
+    # cannot silently change who was told at the time.
+    Column("mentions", Text),
+    Column("edited_at", Instant),
+    # Files attached to the note, as a JSON array of the same records a file
+    # column holds -- key, name, size, type -- plus the store that has them.
+    # A list rather than a column per file, because a note carries however many
+    # somebody dragged onto it; the store name travels with each one so a link
+    # written today still resolves after the default store changes.
+    Column("attachments", Text),
+    # Kept at the top of the panel. The one piece of state a note carries:
+    # "read this before you do anything with this record".
+    Column("pinned", Boolean, default=False, server_default=false(), nullable=False),
     *timestamps(),
+    # The panel's only query -- this record's notes, newest first -- and the
+    # reason it is composite: filtering by resource alone on a table holding
+    # every record's notes is a scan of the lot.
+    Index("ix_timeline_record", "resource", "record_id", "created_at"),
 )
 
 # -- access control ---------------------------------------------------------
@@ -183,6 +210,51 @@ notifications = Table(
     Column("delivery", Text),
     Column("actor", String(160)),
     Column("priority", String(20), default="normal", index=True),
+)
+
+#: Work for a person, as opposed to work for a worker.
+#:
+#: The ``jobs`` table below is the machine's queue; this is the back office's.
+#: They are deliberately separate: a job is retried, claimed and abandoned on a
+#: timeout, and none of those verbs mean anything for something a colleague has
+#: promised to do.
+#:
+#: A task addresses the record it concerns the way a note does -- resource name
+#: and record id as strings -- so a task can hang off a company this
+#: application only reads.
+tasks = Table(
+    "tasks", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("title", String(200), nullable=False),
+    Column("body", Text),
+    Column("resource", String(60), index=True),
+    Column("record_id", String(60)),
+    # Who is doing it, as the identifier notifications are addressed to, plus
+    # the name to show. Assignment is a deliberate act by a person: nothing
+    # here assigns a task automatically, because a queue that assigns itself is
+    # a queue nobody feels responsible for.
+    Column("assignee", String(160), index=True),
+    Column("assignee_name", String(160)),
+    # open -> doing -> done, with blocked and cancelled as the two ways out.
+    Column("state", String(20), nullable=False, default="open", server_default="open",
+           index=True),
+    Column("priority", String(20), default="normal", index=True),
+    Column("due_at", Instant, index=True),
+    Column("created_by", String(160)),
+    Column("created_by_name", String(160)),
+    Column("done_at", Instant),
+    Column("done_by", String(160)),
+    # The monitor's bookkeeping. `notified_assignee` is who was last told this
+    # task is theirs: comparing it with `assignee` is what makes a hand-over
+    # noticed no matter which screen made it, and what stops the same hand-over
+    # being announced on every sweep. `reminded_at` does the same for the due
+    # date.
+    Column("notified_assignee", String(160)),
+    Column("reminded_at", Instant),
+    *timestamps(),
+    # The sweep's query -- open tasks, by when they are due -- and the list's
+    # default sort.
+    Index("ix_tasks_open", "state", "due_at"),
 )
 
 #: Background work that must survive the worker that raised it.
@@ -252,5 +324,5 @@ audit_log = Table(
 #: modules declared -- that is the set ``create_all`` and Alembic work from.
 PLATFORM_TABLES = (
     users, api_tokens, roles, permissions, audit_log, notifications,
-    timeline_entries, jobs,
+    timeline_entries, tasks, jobs,
 )

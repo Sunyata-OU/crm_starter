@@ -726,6 +726,33 @@ body.htmx-request::after {
 .timeline-delete::before { background: var(--danger); }
 .timeline-empty::before { display: none; }
 .timeline-empty { border-left-color: transparent; }
+.timeline-note::before { background: var(--accent); }
+.timeline-note.is-pinned { background: var(--surface-alt); border-radius: var(--radius-sm); }
+
+/* A note keeps the line breaks whoever wrote it typed: a paragraph and a list
+   of three things are different messages, and collapsing them makes one the
+   other. */
+.note-body { margin: .35rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .875rem; }
+.note-form { margin-bottom: .9rem; display: grid; gap: .4rem; }
+.note-input {
+  width: 100%; font: inherit; font-size: .875rem; padding: .45rem .55rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); resize: vertical;
+}
+.note-form-actions { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.note-hint { font-size: .75rem; }
+.note-actions { display: flex; gap: .5rem; margin-top: .25rem; }
+.note-files-list { list-style: none; margin: .35rem 0 0; padding: 0; font-size: .8rem; }
+.note-files-list li { padding: .1rem 0; border: 0; display: flex; gap: .4rem; }
+.note-files-list li::before { display: none; }
+.note-files { font-size: .78rem; max-width: 60%; }
+.note-task-link { margin: 0 0 .9rem; font-size: .8rem; }
+.btn-xs { padding: .1rem .25rem; font-size: .75rem; }
+.btn-link {
+  border: 0; background: none; color: var(--text-muted); padding-left: 0; padding-right: 0;
+}
+.btn-link:hover { background: none; color: var(--accent); text-decoration: underline; }
+.btn-link.danger:hover { color: var(--danger); }
 
 .change-list { list-style: none; margin: .35rem 0 0; padding: 0; font-size: .82rem; }
 .change-list li {
