@@ -320,14 +320,25 @@ def _walk_routes(routes, prefix: str = "") -> list[tuple[str, str, str]]:
 def token(
     name: str = typer.Argument(..., help="A label for the token."),
     roles: str = typer.Option("user", help="Comma-separated roles."),
+    expires_in_days: int = typer.Option(
+        365,
+        help="Days until it stops working. 0 for a token that never expires, "
+             "which should be a decision rather than an oversight.",
+    ),
 ) -> None:
     """Create an API token. The value is shown once and cannot be recovered."""
+    from datetime import timedelta
+
     from sqlalchemy import insert
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from app.auth.api_token import generate_token, hash_token
+    from app.core.clock import utcnow
     from app.core.connections import ConnectionRegistry
     from app.schema import api_tokens
+
+    if expires_in_days < 0:
+        _fail("--expires-in-days cannot be negative.")
 
     settings = get_settings()
     connections = ConnectionRegistry.from_file(settings.connections_path)
@@ -335,6 +346,7 @@ def token(
 
     raw = generate_token()
     role_list = [r.strip() for r in roles.split(",") if r.strip()]
+    expires_at = utcnow() + timedelta(days=expires_in_days) if expires_in_days else None
 
     async def go():
         engine = create_async_engine(url)
@@ -346,6 +358,7 @@ def token(
                         token_hash=hash_token(raw),
                         roles=json.dumps(role_list),
                         is_active=True,
+                        expires_at=expires_at,
                     )
                 )
         finally:
@@ -355,6 +368,11 @@ def token(
 
     typer.secho("\nToken created. It cannot be shown again:\n", bold=True)
     typer.secho(f"  {raw}\n", fg=typer.colors.GREEN)
+    _echo(
+        f"It expires on {expires_at:%d %b %Y}."
+        if expires_at
+        else "It never expires; nothing will remind you to revoke it."
+    )
     _echo(f'Use it as:  curl -H "Authorization: Bearer {raw}" http://localhost:8000/api/...')
 
 

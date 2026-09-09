@@ -98,7 +98,12 @@ def build_auth(settings: Settings, registry: Registry, sessions: SessionStore) -
         match name:
             case "api_token":
                 if registry.has_resource("api_tokens"):
-                    providers.append(ApiTokenAuth(registry.resource("api_tokens").provider))
+                    providers.append(ApiTokenAuth(
+                        registry.resource("api_tokens").provider,
+                        # The same rule the audit log applies to an address:
+                        # believed only where a proxy has been declared.
+                        trust_forwarded_for=bool(settings.proxy_trusted_ips),
+                    ))
                 else:
                     log.warning("auth provider 'api_token' needs an 'api_tokens' resource; skipped")
             case "proxy_header":
