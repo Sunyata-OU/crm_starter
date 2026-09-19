@@ -27,7 +27,7 @@ from app.fields.types import (
 )
 from app.resources.actions import ActionResult, action
 from app.resources.policy import OwnerPolicy, RolePolicy
-from app.resources.rbac import ANY_RESOURCE, store
+from app.resources.rbac import ANY_RESOURCE, DbPolicy, store
 from app.resources.resource import Resource
 from app.resources.views import (
     Column,
@@ -302,7 +302,14 @@ def _notes() -> Resource:
         menu_order=55,
         display_field="body",
         default_sort=["-created_at"],
-        policy=RolePolicy(read=["admin"], create=["admin"], update=["admin"], delete=["admin"]),
+        # Admin-only by default, same as before this table existed -- but a
+        # note is a purely local resource, backed by nothing else with
+        # invariants of its own, so a grant is free to widen that default
+        # (`DbPolicy`'s default mode). That is how `manager` gets to write
+        # notes without a deployment.
+        policy=DbPolicy(
+            base=RolePolicy(read=["admin"], create=["admin"], update=["admin"], delete=["admin"]),
+        ),
         audited=False,
         timeline=False,
         fields=[
@@ -366,7 +373,17 @@ def _notifications() -> Resource:
         menu_order=60,
         display_field="title",
         default_sort=["-created_at"],
-        policy=OwnerPolicy("recipient", identity_attr="email", bypass_roles=("admin",)),
+        # `manager` bypasses the owner restriction the same way `deals` does
+        # in `demo_sales` -- overseeing the team's notifications is what the
+        # role is for. Wrapped in `DbPolicy` (default mode) so a grant can
+        # also widen this for another role without a deployment; unconfigured,
+        # `OwnerPolicy` alone decides, exactly as it did before this table
+        # existed.
+        policy=DbPolicy(
+            base=OwnerPolicy("recipient", identity_attr="email", bypass_roles=("admin", "manager")),
+            owner_field="recipient",
+            identity_attr="email",
+        ),
         audited=False,
         fields=[
             TextField("id", in_form=False, in_list=False, in_detail=False),
