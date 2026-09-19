@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.query import Condition, Op
 from app.core.results import Ctx, Identity, Record
 from app.providers.memory import MemoryProvider
 from app.resources.policy import RolePolicy
@@ -327,3 +328,169 @@ class TestShippedDefaults:
         )
         assert deals["row_scope"] == "own"
         assert not deals["can_delete"]
+
+
+class TestNarrowOnlyMode:
+    """`narrow_only=True` is what screens over another service's tables are wrapped with.
+
+    The risk it exists to close: a resource that is read-only by construction
+    (its data belongs to a service this table has never heard of) must stay
+    that way no matter what an administrator later types into the permissions
+    screen. A grant can take away; it must never be able to give back what the
+    structural policy withheld.
+    """
+
+    async def test_a_grant_cannot_turn_on_writes_for_a_structurally_read_only_resource(self):
+        # The exact risk named in the design: a "companies" screen that is
+        # read-only by nature gets a grant promising can_update. It must not
+        # work -- the write would bypass whatever service owns that data.
+        from app.resources.policy import ReadOnlyPolicy
+
+        policy = await policy_for(
+            [{"role": "user", "resource": "companies", "can_read": True, "can_update": True}],
+            resource_name="companies",
+            base=ReadOnlyPolicy(),
+            narrow_only=True,
+        )
+        assert policy.allows("read", REP)
+        assert not policy.allows("update", REP), "a grant widened a structural refusal"
+
+    async def test_an_administrator_is_not_exempt_from_the_structural_refusal(self):
+        # The superuser bypass normally skips the table entirely. In
+        # narrow-only mode it must not also skip the structural policy for
+        # writes, or "*" becomes exactly the loophole this mode exists to close.
+        from app.resources.policy import ReadOnlyPolicy
+
+        policy = await policy_for(
+            [{"role": "admin", "resource": ANY_RESOURCE, "can_read": True,
+              "can_create": True, "can_update": True, "can_delete": True}],
+            resource_name="companies",
+            identity=ADMIN,
+            base=ReadOnlyPolicy(),
+            narrow_only=True,
+        )
+        assert policy.allows("read", ADMIN)
+        assert not policy.allows("update", ADMIN)
+        assert not policy.allows("delete", ADMIN)
+
+    async def test_a_write_the_structural_policy_already_allows_still_needs_a_grant(self):
+        # Narrowing, not just refusing: a role with no update grant at all
+        # must not be let through by the structural policy alone.
+        policy = await policy_for(
+            [{"role": "user", "resource": "companies", "can_read": True}],
+            resource_name="companies",
+            base=RolePolicy(read=["user"], write=["user"]),
+            narrow_only=True,
+        )
+        assert not policy.allows("update", REP), "no grant named update; base alone must not decide"
+
+    async def test_the_soft_delete_filter_holds_even_for_a_wildcard_grant(self):
+        # scope() must compose the same way allows() does: a grant's row_scope
+        # of "all" narrows nothing away from a structural filter such as
+        # "rows that are not soft-deleted".
+        from app.resources.policy import Policy
+
+        class ActiveOnly(Policy):
+            def scope(self, identity):
+                return Condition("row_status_active", Op.EQ, True)
+
+        policy = await policy_for(
+            [{"role": "user", "resource": "companies", "can_read": True, "row_scope": "all"}],
+            resource_name="companies",
+            base=ActiveOnly(),
+            narrow_only=True,
+        )
+        condition = policy.scope(REP)
+        assert condition is not None
+        assert condition.field == "row_status_active"
+
+    async def test_the_soft_delete_filter_holds_even_for_the_superuser_bypass(self):
+        from app.resources.policy import Policy
+
+        class ActiveOnly(Policy):
+            def scope(self, identity):
+                return Condition("row_status_active", Op.EQ, True)
+
+        policy = await policy_for(
+            [], resource_name="companies", identity=ADMIN, base=ActiveOnly(), narrow_only=True,
+        )
+        condition = policy.scope(ADMIN)
+        assert condition is not None and condition.field == "row_status_active"
+
+    async def test_the_writable_field_allow_list_cannot_be_extended_by_a_grant(self):
+        # A restricted base names exactly the columns an API
+        # write accepts. A grant naming a field outside that list (via a
+        # readonly_fields omission -- there is no positive "allow this field"
+        # column) must not add to it.
+        from app.fields.types import TextField
+        from app.resources.resource import Resource
+
+        class FixedWritable(RolePolicy):
+            def writable_fields(self, identity, resource):
+                if not self.allows("update", identity):
+                    return ()
+                return ("name",)
+
+        policy = await policy_for(
+            [{"role": "user", "resource": "companies", "can_read": True, "can_update": True}],
+            resource_name="companies",
+            base=FixedWritable(read=["user"], write=["user"]),
+            narrow_only=True,
+        )
+        resource = Resource("companies", provider=MemoryProvider([]),
+                            fields=[TextField("name"), TextField("internal_note")])
+        assert policy.writable_fields(REP, resource) == ("name",)
+
+    async def test_default_mode_still_lets_a_grant_widen_a_role_gated_default(self):
+        # The other half of the doctrine: without narrow_only, a grant is
+        # free to widen a base that was only ever a default, not a structural
+        # guarantee -- this is how `notes` ships admin-only and still becomes
+        # writable by `manager` once granted, with no deployment.
+        policy = await policy_for(
+            [{"role": "manager", "resource": "notes", "can_read": True, "can_create": True}],
+            resource_name="notes",
+            identity=Identity(subject="m", email="m@x.test", roles=frozenset({"manager"})),
+            base=RolePolicy(read=["admin"], write=["admin"]),
+        )
+        manager = Identity(subject="m", email="m@x.test", roles=frozenset({"manager"}))
+        assert policy.allows("create", manager), "the default mode must still let a grant widen"
+
+
+class TestAnEmptyTableDefersEntirely:
+    """The difference between a feature and an outage, stated in the task:
+
+    a *bound* permissions table with zero rows anywhere must behave exactly
+    like no table at all -- every resource falls back to its structural
+    policy. A table with rows for *some* other role or resource is a
+    different fact: somebody has configured access control, and simply not
+    granted this, which stays a refusal.
+    """
+
+    async def test_a_bound_but_empty_table_defers_to_the_base_policy(self):
+        store.bind(grant_rows())  # bound, but nothing in it
+        policy = DbPolicy(base=RolePolicy(read=["user"], write=["manager"]))
+        policy.resource_name = "deals"
+        await policy.prepare(REP, "deals", CTX)
+        assert policy.allows("read", REP), "an empty table must not lock everyone out"
+        assert not policy.allows("update", REP), "the base policy still says no"
+
+    async def test_a_bound_but_empty_table_defers_scope_too(self):
+        from app.resources.policy import OwnerPolicy
+
+        store.bind(grant_rows())
+        policy = DbPolicy(base=OwnerPolicy("owner", identity_attr="email"))
+        policy.resource_name = "deals"
+        await policy.prepare(REP, "deals", CTX)
+        condition = policy.scope(REP)
+        assert condition is not None and condition.value == "kim@x.test"
+
+    async def test_a_table_with_rows_for_another_resource_still_refuses(self):
+        # Contrast case: the table is not empty, it simply has nothing to say
+        # about this role and this resource. That must stay a refusal, or
+        # every resource an administrator has not yet configured would fall
+        # open the moment any grant exists anywhere.
+        policy = await policy_for(
+            [{"role": "manager", "resource": "invoices", "can_read": True}],
+            resource_name="deals",
+        )
+        assert not policy.allows("read", REP)

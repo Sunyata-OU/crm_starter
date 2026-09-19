@@ -27,6 +27,7 @@ from app.fields.types import (
     TextField,
 )
 from app.resources.actions import ActionResult, action
+from app.resources.rbac import DbPolicy
 from app.resources.resource import Resource
 from app.resources.views import (
     BoardView,
@@ -82,7 +83,11 @@ def _tasks() -> Resource:
         stamp={"created_by": "id", "created_by_name": "label"},
         # Deliberately no RolePolicy: who may see and assign work is exactly
         # the kind of rule an administrator should be able to change from the
-        # permissions screen without a deployment.
+        # permissions screen without a deployment. `DbPolicy`'s own default
+        # base (`Policy()`, anyone signed in may do anything) is the fallback
+        # for a deployment that never opens that screen, so this is no
+        # narrower than it always was until somebody configures it to be.
+        policy=DbPolicy(),
         fields=[
             TextField("id", in_form=False, in_list=False, in_detail=False),
             TextField("title", label="Task", required=True, searchable=True),

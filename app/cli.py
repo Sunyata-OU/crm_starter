@@ -376,6 +376,85 @@ def token(
     _echo(f'Use it as:  curl -H "Authorization: Bearer {raw}" http://localhost:8000/api/...')
 
 
+@app.command("seed-grants")
+def seed_grants() -> None:
+    """Seed the roles and permission grants the enabled modules ship.
+
+    A module declares module-level ``ROLES`` (rows for ``roles``) and
+    ``GRANTS`` (rows for ``permissions``); this writes them down. Modules that
+    declare neither are skipped, so on a deployment with no such module this
+    does nothing.
+
+    **Idempotent, not declarative.** This inserts a role by ``name`` or a
+    grant by ``(role, resource)`` only when no such row exists yet -- it never
+    updates or deletes one. Run it again after enabling a module and it adds
+    exactly the new rows; run it on a deployment where an administrator has
+    since hand-edited a grant on the permissions screen and that edit is left
+    alone. That asymmetry is deliberate: a seed that "corrected" a row back to
+    its shipped defaults on every deploy would make the permissions screen a
+    lie the moment anyone used it.
+
+    Your identity provider still decides *who* holds a role -- this command only
+    decides what holding one is worth. It never touches an account.
+
+    Like every other command here, it seeds ``db.main`` for whichever
+    environment ``connections.yaml`` points at.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core.connections import ConnectionRegistry
+    from app.core.modules import collect_roles_and_grants
+    from app.core.modules import select as select_modules
+    from app.schema import permissions, roles
+
+    settings = get_settings()
+    shipped_roles, shipped_grants = collect_roles_and_grants(
+        select_modules(enabled=settings.modules or None)
+    )
+    connections = ConnectionRegistry.from_file(settings.connections_path)
+    try:
+        url = connections.spec(DEFAULT_CONNECTION).option("url", required=True)
+    except Exception as exc:
+        _fail(str(exc))
+        return
+
+    async def go() -> tuple[int, int]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                have_roles = {
+                    row.name for row in (await conn.execute(select(roles.c.name))).all()
+                }
+                missing_roles = [r for r in shipped_roles if r["name"] not in have_roles]
+                # One statement per row: modules declare only the columns they
+                # care about, and a batched insert needs every row to agree.
+                for row in missing_roles:
+                    await conn.execute(roles.insert().values(**row))
+
+                have_grants = {
+                    (row.role, row.resource)
+                    for row in (
+                        await conn.execute(select(permissions.c.role, permissions.c.resource))
+                    ).all()
+                }
+                missing_grants = [
+                    g for g in shipped_grants if (g["role"], g["resource"]) not in have_grants
+                ]
+                for row in missing_grants:
+                    await conn.execute(permissions.insert().values(**row))
+            return len(missing_roles), len(missing_grants)
+        finally:
+            await engine.dispose()
+
+    added_roles, added_grants = asyncio.run(go())
+
+    _echo(f"Roles:  {added_roles} added (of {len(shipped_roles)} shipped).")
+    _echo(f"Grants: {added_grants} added (of {len(shipped_grants)} shipped).")
+    if not added_roles and not added_grants:
+        _echo("\nAlready seeded; nothing to do.")
+
+
 def _version_dir(connection: str) -> Path:
     """Where one connection's migrations live.
 

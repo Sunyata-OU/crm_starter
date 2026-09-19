@@ -234,10 +234,87 @@ filters, inline editing, audit trail. Two rules make the model safe:
 
 - **Roles add access.** Where several grants apply, the widest wins. Holding a
   second role can never take something away.
-- **An empty table changes nothing.** If no grant mentions a resource, the
+- **An empty table changes nothing.** If the table holds no rows at all, the
   structural policy decides. A deployment that never configures permissions
   behaves exactly as it did before the table existed, so an unconfigured
   install cannot lock everyone out.
+
+The second rule turns on a distinction worth stating, because the two cases
+look identical from a single resource's point of view and mean opposite
+things. An **empty table** is *nobody has configured access control*, and the
+structural policy answers. A table with rows in it, **none of which name this
+role and this resource**, is *somebody configured access control and did not
+grant this* -- which is a refusal. Collapsing the two would mean that granting
+one role access to one screen silently fell back to the structural default for
+every other screen, which is the opposite of what the person clicking Save
+intended.
+
+### When a grant may not widen
+
+The rule above -- grants add access -- is right when the structural policy is
+a *default*. It is wrong when the structural policy is an *invariant*.
+
+A screen over tables that another service owns is the case. That service owns
+the business rules the tables answer to, so the resource's policy refuses every
+write by construction: a write here would bypass the invariants rather than
+break them loudly. If a grant could turn `can_update` on for such a resource,
+then one row typed into a screen would quietly re-enable exactly the thing the
+policy exists to prevent.
+
+So `DbPolicy` takes a `narrow_only` flag:
+
+```python
+DbPolicy(base=ReadOnlyPolicy(), narrow_only=True)
+```
+
+| | `narrow_only=False` (default) | `narrow_only=True` |
+| --- | --- | --- |
+| Reads | grants decide, once any are configured | same |
+| Writes | a grant may allow what `base` refuses | a write needs **both** the grant and `base` |
+| Superuser (`admin`) | bypasses the table entirely | bypasses it **for reads only** |
+| Row scope, field lists | the grant's answer | intersected with `base`'s |
+
+The superuser row is the one that matters most and is easiest to get wrong. An
+`admin` bypassing the table is correct in the ordinary case -- the table is
+there to *grant*, and an administrator already has everything. But a bypass
+that also covered writes would mean the whole guarantee held only for
+non-administrators, which is no guarantee at all: the account most likely to
+be handed a `*` grant is precisely the one that must still not be able to
+write through a service-owned screen.
+
+What `narrow_only` still allows is the useful half: **a grant can widen who
+reads.** That is how another role gets to see such a screen at all without a
+code change and a redeploy.
+
+### Roles and grants a module ships
+
+```bash
+uv run crm seed-grants
+```
+
+A module declares module-level `ROLES` (rows for the `roles` table, each with
+a `name`) and `GRANTS` (rows for `permissions`, each with a `role` and a
+`resource`), because what a role is worth is a property of the screens that
+module adds. `crm seed-grants` writes down those of the enabled modules,
+idempotently: it inserts a role or a grant only where no such row exists, and
+never updates or deletes one. A seed that "corrected" rows back to their
+shipped defaults on every deploy would make the permissions screen a lie the
+moment anybody used it. If two modules declare the same role, or the same
+`(role, resource)` pair, the first one loaded wins.
+
+**Your identity provider still decides who holds a role.** These rows decide
+only what holding one is worth; nothing here assigns a role to a person. With
+Keycloak client roles, the claim path is
+`CRM_OIDC_ROLES_CLAIM=resource_access.<client-id>.roles` -- a realm-role path
+finds nothing, falls through to `default_roles`, and lands an administrator in
+the application with the rights of a stranger.
+
+**Named actions are not covered.** Who may run a particular action is still
+decided in code (`roles=("admin",)`), because the grants table has no column
+for "may run this particular action" and adding one is a schema change. So a
+role that cannot, say, approve a payment holds that only because *nobody* but
+`admin` can, not because a grant says so. Worth knowing before promising
+somebody a role means read-only.
 
 Grants are cached for 30 seconds. The cache is dropped when a grant is edited
 through the application, and expires on its own so a change made by another

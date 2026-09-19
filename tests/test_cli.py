@@ -211,3 +211,174 @@ class TestPerDatabaseMigrations:
         finally:
             get_settings.cache_clear()
         assert called, "check-connections did not load modules before reading connections"
+
+
+class TestSeedGrants:
+    """`crm seed-grants`. Idempotent by design -- see the command's own
+    docstring for why re-running it must add rows and never touch one an
+    administrator has since edited by hand."""
+
+    ROLES = [
+        {"name": "manager", "label": "Manager"},
+        {"name": "finance", "label": "Finance"},
+    ]
+    GRANTS = [
+        {"role": "manager", "resource": "tasks", "can_read": True, "can_update": True},
+        {"role": "finance", "resource": "invoices", "can_read": True},
+    ]
+
+    @classmethod
+    def _configured(cls, tmp_path, monkeypatch):
+        """A `connections.yaml` pointing `db.main` at a fresh sqlite file,
+        with the `roles`/`permissions` tables already created -- schema
+        creation is `crm seed`'s job, not this command's."""
+        import sqlalchemy as sa
+
+        from app.schema import metadata
+
+        db_path = tmp_path / "t.db"
+        config = tmp_path / "connections.yaml"
+        config.write_text(
+            "connections:\n"
+            f"  db.main:\n    type: sqlalchemy\n    url: sqlite+aiosqlite:///{db_path}\n"
+        )
+        monkeypatch.setenv("CRM_CONNECTIONS_FILE", str(config))
+        get_settings.cache_clear()
+
+        from types import SimpleNamespace
+
+        from app.core.modules import LoadedModule, Manifest
+
+        shipping = LoadedModule(
+            Manifest(name="shipping"),
+            SimpleNamespace(ROLES=cls.ROLES, GRANTS=cls.GRANTS),
+            "shipping",
+        )
+        silent = LoadedModule(Manifest(name="silent"), SimpleNamespace(), "silent")
+        monkeypatch.setattr("app.core.modules.select", lambda **_: [silent, shipping])
+
+        engine = sa.ext.asyncio.create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+
+        async def create():
+            async with engine.begin() as conn:
+                await conn.run_sync(
+                    lambda sync_conn: metadata.create_all(
+                        sync_conn, tables=[metadata.tables["roles"], metadata.tables["permissions"]]
+                    )
+                )
+            await engine.dispose()
+
+        import asyncio
+
+        asyncio.run(create())
+        return db_path
+
+    def test_seeds_the_roles_and_grants_modules_declare(self, tmp_path, monkeypatch):
+        self._configured(tmp_path, monkeypatch)
+        try:
+            result = runner.invoke(cli, ["seed-grants"])
+            assert result.exit_code == 0, result.output
+            assert f"Roles:  {len(self.ROLES)} added" in result.output
+            assert f"Grants: {len(self.GRANTS)} added" in result.output
+        finally:
+            get_settings.cache_clear()
+
+    def test_running_it_twice_adds_nothing_the_second_time(self, tmp_path, monkeypatch):
+        self._configured(tmp_path, monkeypatch)
+        try:
+            runner.invoke(cli, ["seed-grants"])
+            second = runner.invoke(cli, ["seed-grants"])
+            assert second.exit_code == 0, second.output
+            assert "Roles:  0 added" in second.output
+            assert "Grants: 0 added" in second.output
+            assert "Already seeded" in second.output
+        finally:
+            get_settings.cache_clear()
+
+    def test_a_hand_edited_grant_is_left_alone(self, tmp_path, monkeypatch):
+        """The whole point of seed over fixture: running this again must not
+        clobber a row an administrator has since changed on the permissions
+        screen -- matched by (role, resource), not overwritten wholesale."""
+        import sqlalchemy as sa
+
+        db_path = self._configured(tmp_path, monkeypatch)
+
+        # An administrator has already narrowed finance's shipped grant on
+        # "invoices" down to nothing at all -- the same
+        # row `seed-grants` would otherwise create, but hand-edited first.
+        async def hand_edit():
+            from app.schema import permissions
+
+            engine = sa.ext.asyncio.create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+            async with engine.begin() as conn:
+                await conn.execute(
+                    permissions.insert().values(
+                        role="finance", resource="invoices", can_read=False,
+                        can_create=False, can_update=False, can_delete=False,
+                        row_scope="none",
+                    )
+                )
+            await engine.dispose()
+
+        import asyncio
+
+        asyncio.run(hand_edit())
+
+        try:
+            result = runner.invoke(cli, ["seed-grants"])
+            assert result.exit_code == 0, result.output
+
+            async def read_back():
+                from app.schema import permissions
+
+                engine = sa.ext.asyncio.create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+                async with engine.begin() as conn:
+                    rows = (
+                        await conn.execute(
+                            sa.select(permissions.c.can_read, permissions.c.row_scope)
+                            .where(
+                                permissions.c.role == "finance",
+                                permissions.c.resource == "invoices",
+                            )
+                        )
+                    ).all()
+                await engine.dispose()
+                return rows
+
+            rows = asyncio.run(read_back())
+            # Exactly one row for this (role, resource) -- seed-grants did
+            # not insert a second, shipped-defaults copy alongside it -- and
+            # it still reads the way the administrator set it, not the way
+            # the module ships it.
+            assert len(rows) == 1
+            assert rows[0].can_read is False
+            assert rows[0].row_scope == "none"
+        finally:
+            get_settings.cache_clear()
+
+
+class TestCollectingRolesAndGrants:
+    def test_the_first_declaration_wins(self):
+        from types import SimpleNamespace
+
+        from app.core.modules import LoadedModule, Manifest, collect_roles_and_grants
+
+        first = LoadedModule(
+            Manifest(name="a"),
+            SimpleNamespace(
+                ROLES=[{"name": "ops", "label": "First"}],
+                GRANTS=[{"role": "ops", "resource": "tasks", "can_read": True}],
+            ),
+            "a",
+        )
+        second = LoadedModule(
+            Manifest(name="b"),
+            SimpleNamespace(
+                ROLES=[{"name": "ops", "label": "Second"}],
+                GRANTS=[{"role": "ops", "resource": "tasks", "can_read": False}],
+            ),
+            "b",
+        )
+        roles, grants = collect_roles_and_grants([first, second])
+        assert [r["label"] for r in roles] == ["First"]
+        assert [g["can_read"] for g in grants] == [True]

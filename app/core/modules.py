@@ -219,6 +219,29 @@ def select(
     return ordered
 
 
+def collect_roles_and_grants(
+    modules: Sequence[LoadedModule],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The roles and permission grants the given modules ship.
+
+    A module opts in by defining module-level ``ROLES`` (rows for the ``roles``
+    table, each with a ``name``) and ``GRANTS`` (rows for ``permissions``, each
+    with a ``role`` and a ``resource``). What a role is worth is a property of
+    the screens a module adds, so it is declared beside them; ``crm
+    seed-grants`` is what writes them down. Later modules cannot redefine an
+    earlier one's role or grant -- the first declaration of a name, or of a
+    ``(role, resource)`` pair, wins.
+    """
+    roles: dict[str, dict[str, Any]] = {}
+    grants: dict[tuple[str, str], dict[str, Any]] = {}
+    for loaded in modules:
+        for row in getattr(loaded.module, "ROLES", ()):
+            roles.setdefault(row["name"], dict(row))
+        for row in getattr(loaded.module, "GRANTS", ()):
+            grants.setdefault((row["role"], row["resource"]), dict(row))
+    return list(roles.values()), list(grants.values())
+
+
 def load_modules(
     registry: Registry,
     *,

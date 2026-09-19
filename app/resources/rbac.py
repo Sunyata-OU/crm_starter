@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import TYPE_CHECKING, Any, Literal
 
-from app.core.query import Condition, Filter, ListQuery, Op
+from app.core.query import Condition, Filter, ListQuery, Op, and_
 from app.core.results import Ctx, Identity, Record
 from app.resources.policy import DENY_ALL, Operation, Policy
 
@@ -294,12 +294,12 @@ store = PermissionStore()
 #: context variable is naturally scoped to the task handling one request.
 #: The default is ``None`` rather than a dict: a mutable default on a context
 #: variable is shared by every context that never sets it.
-_request_grants: contextvars.ContextVar[dict[str, list[Grant]] | None] = (
+_request_grants: contextvars.ContextVar[dict[str, list[Grant] | None] | None] = (
     contextvars.ContextVar("crm_request_grants", default=None)
 )
 
 
-def set_request_grants(resource_name: str, grants: list[Grant]) -> None:
+def set_request_grants(resource_name: str, grants: list[Grant] | None) -> None:
     """Record the grants that apply for the rest of this request."""
     current = dict(_request_grants.get() or {})
     current[resource_name] = grants
@@ -322,6 +322,30 @@ class DbPolicy(Policy):
     deployment that never configures permissions behaves exactly as it did
     before this module existed. That matters: an empty permissions table must
     not silently lock everyone out.
+
+    ``base`` composes with the grants in one of two ways, chosen by
+    ``narrow_only``:
+
+    * **Default -- grants add access.** A grant may do anything ``base``
+      leaves unsaid, which is the ordinary case: ``base`` is a sensible
+      default (often "admin only"), and the whole point of the permissions
+      table is to let an administrator widen that default without a
+      deployment. This is what lets, say, ``notes`` ship hardcoded to
+      administrators and still become writable by a `manager` role once
+      somebody grants it.
+    * **``narrow_only=True`` -- grants may only take away.** For a resource
+      whose refusal is structural rather than a mere default -- a screen
+      whose data is owned by a service this table knows nothing about, or the
+      permissions table's own kind of resource -- ``base`` is authoritative
+      for every write, superuser included, and a grant can only narrow what
+      it already allows, never widen it. A grant that turns on ``can_update``
+      for a resource like that must not enable it: the invariants that write
+      would bypass live outside this table entirely, and no row in it should
+      be able to promise a capability the structural policy never had to
+      give. Reads still come from the grants alone once any are configured --
+      *who may see what* is exactly the operational question this table
+      answers -- ``narrow_only`` affects writes and the row/field
+      restrictions attached to them.
     """
 
     def __init__(
@@ -332,24 +356,43 @@ class DbPolicy(Policy):
         identity_attr: str = "email",
         #: Roles that bypass the table entirely.
         superuser_roles: Sequence[str] = ("admin",),
+        #: See the class docstring. False is the historical default: grants
+        #: widen a sensible ``base``. Screens over another service's tables, and anything else
+        #: whose refusal must hold regardless of what an administrator later
+        #: grants, pass True.
+        narrow_only: bool = False,
     ) -> None:
         self.base = base or Policy()
         self.owner_field = owner_field
         self.identity_attr = identity_attr
         self.superuser_roles = frozenset(superuser_roles)
+        self.narrow_only = narrow_only
         #: Set by the registry when the policy is attached to a resource.
         self.resource_name = ""
 
     # -- request preparation ------------------------------------------------
 
-    async def prepare(self, identity: Identity, resource_name: str, ctx: Ctx) -> list[Grant]:
+    async def prepare(self, identity: Identity, resource_name: str, ctx: Ctx) -> list[Grant] | None:
         """Load this caller's grants and remember them for the checks below.
 
         Policy methods are synchronous because they are called from templates
         and tight loops; the asynchronous load therefore happens once, here,
         before any of them run.
+
+        An empty *table* -- no permissions rows anywhere, not even for
+        another role -- is recorded as ``None``, the same as "grants were
+        never loaded at all". That is what makes an unconfigured install
+        behave exactly as it did before this module existed: `allows()` and
+        `scope()` treat ``None`` as "defer to the structural policy", and a
+        deployment that has never opened the permissions screen must get that
+        answer for every resource, not a hard "no" the moment one resource
+        happens to be `DbPolicy`-backed. A table that has *some* rows but none
+        naming this role and this resource is a different fact -- somebody
+        has configured access control, deliberately, and simply did not grant
+        this -- so that case stays an empty list and stays a refusal.
         """
-        grants = await store.grants_for(identity, resource_name, ctx)
+        table = await store.table(ctx)
+        grants: list[Grant] | None = table.for_identity(identity, resource_name) if len(table) else None
         set_request_grants(resource_name, grants)
         return grants
 
@@ -361,34 +404,63 @@ class DbPolicy(Policy):
     def allows(self, op: Operation, identity: Identity, record: Record | None = None) -> bool:
         if not identity.is_authenticated:
             return False
-        if identity.has_role(*self.superuser_roles):
+
+        is_super = identity.has_role(*self.superuser_roles)
+        # In the default mode a superuser bypasses the table entirely, same
+        # as always. In narrow-only mode the bypass is read-only: writes are
+        # handled below, together with every other role, because even an
+        # administrator must not be able to write through a resource whose
+        # refusal is structural -- the whole point of a resource like
+        # that is that the invariants live in a service this table knows
+        # nothing about, and no grant, "*" included, should be able to route
+        # around that by promising a capability the structural policy never
+        # had to give.
+        if is_super and (op == "read" or not self.narrow_only):
             return True
 
-        grants = self._cached(identity, self.resource_name)
-        if grants is None or not store.configured:
-            # Nothing loaded, or no permissions table at all: defer to the
-            # structural policy rather than refusing everything.
-            return self.base.allows(op, identity, record)
-        if not grants:
-            return False
-
-        if not any(g.allows(op) for g in grants):
-            return False
-
-        # An "own rows only" grant still has to check the row in hand, since
-        # scope() narrows lists but a direct write names its own record.
-        if record is not None and op in ("update", "delete"):
-            widest = max((g.row_scope for g in grants if g.allows(op)), key=_scope_rank)
-            if widest == "own" and not self._owns(record, identity):
+        if not is_super:
+            grants = self._cached(identity, self.resource_name)
+            if grants is None or not store.configured:
+                # Nothing loaded, or no permissions table at all: defer to the
+                # structural policy rather than refusing everything.
+                return self.base.allows(op, identity, record)
+            if not grants:
                 return False
+
+            if not any(g.allows(op) for g in grants):
+                return False
+
+            # An "own rows only" grant still has to check the row in hand,
+            # since scope() narrows lists but a direct write names its own
+            # record.
+            if record is not None and op in ("update", "delete"):
+                widest = max((g.row_scope for g in grants if g.allows(op)), key=_scope_rank)
+                if widest == "own" and not self._owns(record, identity):
+                    return False
+
+        if op != "read" and self.narrow_only:
+            # Grants may only narrow what the structural policy allows here,
+            # never widen it. A grant is consulted on its own for reads --
+            # that is the whole feature, in both modes -- but a write is let
+            # through only if the structural policy would also let it
+            # through, superuser or not.
+            return self.base.allows(op, identity, record)
 
         return True
 
     def scope(self, identity: Identity) -> Filter | None:
         if not identity.is_authenticated:
             return DENY_ALL
+
+        # In narrow-only mode the structural scope -- typically "rows that
+        # are not soft-deleted" -- is not a restriction a grant can widen
+        # away, so it is computed up front and applies to every outcome
+        # below, superuser included. In the default mode it plays no part
+        # once any grant is configured, same as always: a grant's row_scope
+        # is the whole answer there.
+        structural = self.base.scope(identity) if self.narrow_only else None
         if identity.has_role(*self.superuser_roles):
-            return None
+            return structural
 
         grants = self._cached(identity, self.resource_name)
         if grants is None or not store.configured:
@@ -403,11 +475,12 @@ class DbPolicy(Policy):
         # Take the widest scope any applicable grant gives. Roles add access;
         # holding a broader role must not be undone by also holding a narrow one.
         widest = max((g.row_scope for g in readable), key=_scope_rank)
-        if widest == "all":
-            return None
         if widest == "none":
             return DENY_ALL
-        return Condition(self.owner_field, Op.EQ, getattr(identity, self.identity_attr))
+        if widest == "all":
+            return structural
+        owned = Condition(self.owner_field, Op.EQ, getattr(identity, self.identity_attr))
+        return and_(structural, owned) if self.narrow_only else owned
 
     def _owns(self, record: Record, identity: Identity) -> bool:
         return record.get(self.owner_field) == getattr(identity, self.identity_attr)
@@ -416,11 +489,24 @@ class DbPolicy(Policy):
 
     def readable_fields(self, identity: Identity, resource: Resource) -> tuple[str, ...]:
         visible = [f for f in resource.fields if f.visible_to(identity)]
+        if self.narrow_only:
+            # A field the structural policy never shows (a per-field
+            # `read_roles` the base class enforces) cannot be un-hidden by a
+            # grant -- same reasoning as `allows()`.
+            allowed = frozenset(self.base.readable_fields(identity, resource))
+            visible = [f for f in visible if f.name in allowed]
         hidden = self._hidden(identity)
         return tuple(f.name for f in visible if f.name not in hidden)
 
     def writable_fields(self, identity: Identity, resource: Resource) -> tuple[str, ...]:
         writable = [f for f in resource.fields if f.writable_by(identity)]
+        if self.narrow_only:
+            # Keeps a restricted base honest: its `writable_fields` is a fixed
+            # allow-list of the columns the write actually posts to the
+            # service's API, and a grant must not be able to add a column to
+            # that list -- it is not this table's list to extend.
+            allowed = frozenset(self.base.writable_fields(identity, resource))
+            writable = [f for f in writable if f.name in allowed]
         blocked = self._hidden(identity) | self._readonly(identity)
         return tuple(f.name for f in writable if f.name not in blocked)
 
@@ -468,7 +554,7 @@ def _scope_rank(scope: str) -> int:
     return _SCOPE_ORDER.get(scope, 0)
 
 
-def _grant(role: str, resource: str, *ops: str, rows: RowScope = "all") -> dict[str, Any]:
+def grant_row(role: str, resource: str, *ops: str, rows: RowScope = "all") -> dict[str, Any]:
     """One grant row with every column filled in.
 
     Spelled out rather than relying on column defaults, because a bulk insert
@@ -490,23 +576,23 @@ def _grant(role: str, resource: str, *ops: str, rows: RowScope = "all") -> dict[
 
 #: The grants created for a fresh installation.
 DEFAULT_GRANTS: tuple[dict[str, Any], ...] = (
-    _grant("admin", ANY_RESOURCE, "read", "create", "update", "delete"),
-    _grant("manager", ANY_RESOURCE, "read", "create", "update"),
-    _grant("user", "companies", "read", "create", "update"),
-    _grant("user", "contacts", "read", "create", "update"),
+    grant_row("admin", ANY_RESOURCE, "read", "create", "update", "delete"),
+    grant_row("manager", ANY_RESOURCE, "read", "create", "update"),
+    grant_row("user", "companies", "read", "create", "update"),
+    grant_row("user", "contacts", "read", "create", "update"),
     # A rep works their own pipeline and their own diary.
-    _grant("user", "deals", "read", "create", "update", rows="own"),
-    _grant("user", "activities", "read", "create", "update", "delete", rows="own"),
-    _grant("readonly", ANY_RESOURCE, "read"),
+    grant_row("user", "deals", "read", "create", "update", rows="own"),
+    grant_row("user", "activities", "read", "create", "update", "delete", rows="own"),
+    grant_row("readonly", ANY_RESOURCE, "read"),
 )
 
-def _role(name: str, label: str, description: str) -> dict[str, Any]:
+def role_row(name: str, label: str, description: str) -> dict[str, Any]:
     return {"name": name, "label": label, "description": description, "is_builtin": True}
 
 
 DEFAULT_ROLES: tuple[dict[str, Any], ...] = (
-    _role("admin", "Administrator", "Full access, including permissions and the system page."),
-    _role("manager", "Manager", "Sees and edits everything, but cannot delete."),
-    _role("user", "User", "Works with their own records."),
-    _role("readonly", "Read only", "May look, not touch."),
+    role_row("admin", "Administrator", "Full access, including permissions and the system page."),
+    role_row("manager", "Manager", "Sees and edits everything, but cannot delete."),
+    role_row("user", "User", "Works with their own records."),
+    role_row("readonly", "Read only", "May look, not touch."),
 )
