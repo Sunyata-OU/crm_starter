@@ -19,6 +19,7 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Enum,
     Integer,
     MetaData,
     Numeric,
@@ -28,7 +29,7 @@ from sqlalchemy import (
 )
 
 from app.core.query import Condition, Op
-from app.providers.sql import _coerce_value, build_condition, build_filter
+from app.providers.sql import _NO_MATCH, _coerce_value, build_condition, build_filter
 
 
 @pytest.fixture
@@ -45,6 +46,11 @@ def table() -> Table:
         Column("start_time", DateTime),
         Column("opens_at", Time),
     )
+
+
+def sql(expression) -> str:
+    """The statement text, for assertions about its shape rather than its values."""
+    return str(expression.compile(compile_kwargs={"literal_binds": False}))
 
 
 def params(expression) -> list:
@@ -149,12 +155,26 @@ class TestTemporalColumns:
     def test_a_timestamp_string_is_read_however_it_is_spelled(self, table, raw, expected):
         assert params(build_condition(table, Condition("start_time", Op.GTE, raw))) == [expected]
 
-    def test_a_trailing_z_is_read_as_utc(self, table):
-
+    def test_a_trailing_z_is_read_as_utc_and_stripped_for_a_naive_column(self, table):
+        # asyncpg cannot compare an aware bound with `timestamp without time zone`.
         [bound] = params(
             build_condition(table, Condition("start_time", Op.GTE, "2026-09-01T14:30:00Z"))
         )
-        assert bound == datetime(2026, 9, 1, 14, 30, tzinfo=UTC)
+        assert bound == datetime(2026, 9, 1, 14, 30)
+
+    def test_an_aware_datetime_is_converted_to_naive_utc(self, table):
+        # What `@month_start` resolves to: an aware instant in the reader's zone.
+        from zoneinfo import ZoneInfo
+
+        aware = datetime(2026, 9, 1, 0, 0, tzinfo=ZoneInfo("Europe/Tallinn"))
+        [bound] = params(build_condition(table, Condition("start_time", Op.GTE, aware)))
+        assert bound == datetime(2026, 8, 31, 21, 0)
+        assert bound.tzinfo is None
+
+    def test_a_timezone_aware_column_keeps_the_aware_bound(self):
+        tz_table = Table("t", MetaData(), Column("at", DateTime(timezone=True)))
+        aware = datetime(2026, 9, 1, tzinfo=UTC)
+        assert params(build_condition(tz_table, Condition("at", Op.GTE, aware))) == [aware]
 
     def test_a_date_column_keeps_the_date_and_drops_the_clock(self, table):
         bound = params(build_condition(table, Condition("closed", Op.EQ, "2026-06-15T09:00:00")))
@@ -179,10 +199,11 @@ class TestTemporalColumns:
         ("closed", "soon"),
         ("opens_at", "half nine"),
     ])
-    def test_an_unparseable_value_reaches_the_backend_as_itself(self, table, column, raw):
-        # The backend then names the type it cannot compare, rather than this
-        # coercion inventing a date and answering a different question.
-        assert params(build_condition(table, Condition(column, Op.EQ, raw))) == [raw]
+    def test_an_unparseable_value_matches_nothing(self, table, column, raw):
+        # Not invented into a date, and not sent to PostgreSQL as text it would
+        # reject with a 502.
+        assert params(build_condition(table, Condition(column, Op.EQ, raw))) == []
+        assert sql(build_condition(table, Condition(column, Op.EQ, raw))) == "false"
 
     def test_a_pattern_operator_still_searches_the_text(self, table):
         [bound] = params(build_condition(table, Condition("closed", Op.CONTAINS, "2026-06")))
@@ -199,13 +220,38 @@ class TestPatternOperatorsAreExcluded:
 
 
 class TestValuesThatWillNotConvert:
-    def test_an_unconvertible_value_reaches_the_backend_as_itself(self, table):
-        # Rewriting it into something that parses would silently answer a
-        # different question than the one asked.
-        assert params(build_condition(table, Condition("id", Op.EQ, "abc"))) == ["abc"]
+    """Letters typed into a number box. PostgreSQL answers with "operator does
+    not exist: integer = character varying", which the list turns into a 502, so
+    the condition is decided here: nothing is equal to it, everything differs."""
 
-    def test_an_unrecognised_boolean_spelling_is_left_alone(self, table):
-        assert _coerce_value(table.c.active, Op.EQ, "maybe") == "maybe"
+    def test_an_unconvertible_value_matches_nothing(self, table):
+        assert sql(build_condition(table, Condition("id", Op.EQ, "abc"))) == "false"
+
+    def test_its_negation_matches_everything(self, table):
+        assert sql(build_condition(table, Condition("id", Op.NE, "abc"))) == "true"
+        assert sql(build_condition(table, Condition("id", Op.NOT_IN, ["abc"]))) == "true"
+
+    def test_an_in_list_keeps_the_members_that_convert(self, table):
+        assert params(build_condition(table, Condition("id", Op.IN, ["abc", "7"]))) == [7]
+
+    def test_an_in_list_of_nothing_convertible_matches_nothing(self, table):
+        assert sql(build_condition(table, Condition("id", Op.IN, ["a", "b"]))) == "false"
+
+    def test_an_unrecognised_boolean_spelling_matches_nothing(self, table):
+        assert _coerce_value(table.c.active, Op.EQ, "maybe") is _NO_MATCH
+
+    def test_an_enum_label_it_does_not_have_matches_nothing(self):
+        kind = Table("q", MetaData(), Column("type", Enum("a", "b", name="kind")))
+        assert sql(build_condition(kind, Condition("type", Op.EQ, "zzz"))) == "false"
+        assert params(build_condition(kind, Condition("type", Op.EQ, "a"))) == ["a"]
+
+    def test_a_pattern_on_an_enum_compares_its_text(self):
+        # PostgreSQL has no LIKE for an enum.
+        kind = Table("q", MetaData(), Column("type", Enum("a", "b", name="kind")))
+        assert "CAST" in sql(build_condition(kind, Condition("type", Op.ICONTAINS, "a")))
+
+    def test_a_pattern_on_a_text_column_is_not_cast(self, table):
+        assert "CAST" not in sql(build_condition(table, Condition("name", Op.ICONTAINS, "a")))
 
     def test_a_null_check_needs_no_value(self, table):
         assert params(build_condition(table, Condition("id", Op.IS_NULL))) == []

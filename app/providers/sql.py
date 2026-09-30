@@ -11,6 +11,7 @@ resource point at an existing schema without a model class being written for it.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import UTC
 from datetime import date as date_type
 from datetime import datetime as datetime_type
 from datetime import time as time_type
@@ -18,13 +19,17 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import (
+    String,
     Table,
     case,
+    cast,
     delete,
+    false,
     func,
     insert,
     select,
     text,
+    true,
     update,
 )
 from sqlalchemy import (
@@ -306,6 +311,16 @@ def build_condition(table: TableLike, cond: Condition) -> ColumnElement[bool]:
     """
     col = _column(table, cond.field)
     value = _coerce_value(col, cond.op, cond.value)
+    if value is _NO_MATCH:
+        # The value cannot exist in this column, so "is" it matches nothing and
+        # "is not" matches everything -- rather than a 502 from the database
+        # for typing letters into a number box.
+        return true() if cond.op in (Op.NE, Op.NOT_IN) else false()
+    if cond.op in _PATTERN_OPS and (
+        not isinstance(col.type, String) or getattr(col.type, "enums", None) is not None
+    ):
+        # LIKE is a text operator: PostgreSQL has none for an enum or a number.
+        col = cast(col, String)
     match cond.op:
         case Op.EQ:
             return col.is_(None) if value is None else col == value
@@ -346,6 +361,10 @@ def build_condition(table: TableLike, cond: Condition) -> ColumnElement[bool]:
 _TRUE_TOKENS = frozenset({"1", "true", "yes", "on", "y", "t"})
 _FALSE_TOKENS = frozenset({"0", "false", "no", "off", "n", "f"})
 
+#: A value the column's type cannot hold ("abc" for an integer, a label an enum
+#: does not have). Distinct from ``None``, which is a legitimate value.
+_NO_MATCH: Any = object()
+
 #: Operators whose value is a search pattern rather than a comparable. Coercing
 #: "12" to an int here would turn a substring search into an equality test.
 _PATTERN_OPS = frozenset({Op.CONTAINS, Op.ICONTAINS, Op.STARTSWITH, Op.ENDSWITH})
@@ -357,12 +376,35 @@ def _coerce_value(column: ColumnElement[Any], op: Op, value: Any) -> Any:
         return value
     if op in SEQUENCE_OPS:
         if isinstance(value, (list, tuple, set, frozenset)):
-            return [_coerce_to_column(column, v) for v in value]
+            kept = [v for v in (_coerce_to_column(column, v) for v in value) if v is not _NO_MATCH]
+            return kept or _NO_MATCH
         return value
     return _coerce_to_column(column, value)
 
 
 def _coerce_to_column(column: ColumnElement[Any], value: Any) -> Any:
+    """Convert one value to the type its column compares against, then line up
+    its timezone with the column's."""
+    return _match_zone(column, _convert_to_column(column, value))
+
+
+def _match_zone(column: ColumnElement[Any], value: Any) -> Any:
+    """Hand a naive column a naive bound.
+
+    asyncpg refuses to compare an aware datetime with ``timestamp without time
+    zone`` ("can't subtract offset-naive and offset-aware datetimes"), and the
+    filter layer produces aware ones -- ``@month_start`` and any ISO string
+    with an offset. proffyhub and proffy-jobs store naive UTC, so the bound is
+    converted to UTC and stripped of its zone.
+    """
+    if not isinstance(value, datetime_type) or value.tzinfo is None:
+        return value
+    if getattr(column.type, "timezone", True):
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _convert_to_column(column: ColumnElement[Any], value: Any) -> Any:
     """Convert one text value to the type its column compares against.
 
     Text is what reaches a query from a URL, a form or another provider's keys;
@@ -373,6 +415,11 @@ def _coerce_to_column(column: ColumnElement[Any], value: Any) -> Any:
     """
     if not isinstance(value, str):
         return value
+    # A PostgreSQL enum rejects a label it does not have ("invalid input value
+    # for enum"), and its python_type is not defined, so check it first.
+    enums = getattr(column.type, "enums", None)
+    if enums is not None:
+        return value if value in enums else _NO_MATCH
     try:
         python_type = column.type.python_type
     except (NotImplementedError, AttributeError):
@@ -384,17 +431,17 @@ def _coerce_to_column(column: ColumnElement[Any], value: Any) -> Any:
             return True
         if lowered in _FALSE_TOKENS:
             return False
-        return value
+        return _NO_MATCH
     if python_type is int:
         try:
             return int(value)
         except ValueError:
-            return value
+            return _NO_MATCH
     if python_type is Decimal:
         try:
             return Decimal(value)
         except InvalidOperation:
-            return value
+            return _NO_MATCH
     return _to_temporal(python_type, value)
 
 
@@ -404,8 +451,8 @@ def _to_temporal(python_type: Any, value: str) -> Any:
     A date given for a timestamp column widens to midnight -- what a caller
     bounding a day meant by it -- and a timestamp given for a date column keeps
     the date and drops the clock. A non-temporal column, or a string that will
-    not parse, comes back untouched, so the backend names the type it cannot
-    compare rather than this function inventing a date.
+    not parse, matches nothing rather than reaching the backend as text it
+    would reject.
     """
     try:
         if python_type is date_type:
@@ -415,7 +462,7 @@ def _to_temporal(python_type: Any, value: str) -> Any:
         if python_type is time_type:
             return time_type.fromisoformat(value)
     except ValueError:
-        return value
+        return _NO_MATCH
     return value
 
 
