@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -491,8 +492,24 @@ def _alembic_config(connection: str, *, create: bool = False):
     # env.py reads both: the first says which database, the second keeps its
     # revision history out of the default database's version table.
     cfg.set_main_option("crm_connection", connection)
-    cfg.set_main_option("version_locations", str(version_dir))
+    locations = [version_dir]
+    if connection == DEFAULT_CONNECTION:
+        # An enabled module may ship revisions of its own, for its own tables,
+        # which chain onto the framework's like any other. Only the default
+        # database: a module's tables are placed there unless its resources say
+        # otherwise, and a second database has a history of its own.
+        locations += module_migration_dirs()
+    cfg.set_main_option("version_locations", os.pathsep.join(str(p) for p in locations))
     return cfg
+
+
+def module_migration_dirs() -> list[Path]:
+    """The ``migrations/`` directory of every enabled module that ships one."""
+    from app.core.modules import module_paths
+    from app.core.modules import select as select_modules
+
+    settings = get_settings()
+    return module_paths(select_modules(enabled=settings.modules or None), "migrations")
 
 
 def _known_connection(connection: str) -> None:
@@ -552,7 +569,9 @@ def migrate(
             if revision == "base":
                 command.downgrade(cfg, "base", sql=sql)
             else:
-                command.upgrade(cfg, revision, sql=sql)
+                # "heads": a module's revisions branch off the framework's, so
+                # there can be several tips, and "head" refuses to guess.
+                command.upgrade(cfg, "heads" if revision == "head" else revision, sql=sql)
         except Exception as exc:
             _fail(f"migrating {name!r} failed: {exc}")
     if not sql:
@@ -579,7 +598,12 @@ def make_migration(
 
     cfg = _alembic_config(connection, create=True)
     try:
-        command.revision(cfg, message=message, autogenerate=not empty)
+        # New revisions are the framework's own, never a module's: the first
+        # location is the main history, whichever modules are enabled.
+        command.revision(
+            cfg, message=message, autogenerate=not empty,
+            version_path=str(_version_dir(connection)),
+        )
     except Exception as exc:
         _fail(f"could not generate a migration: {exc}")
 
@@ -981,6 +1005,34 @@ def register(registry: Registry) -> None:
 ''')
     _echo(f"# Save as modules/{module_name}/__init__.py, then add a '{name}' table.",
           err=True)
+
+
+def _load_module_commands() -> None:
+    """Let an enabled module add commands: ``register_cli(app)`` on its package.
+
+    Run when this file is imported, so ``crm --help`` lists them. A module that
+    fails here must not take every other command down with it, but the failure
+    is said aloud rather than swallowed.
+    """
+    from app.core.modules import select as select_modules
+    from app.settings import Settings
+
+    try:
+        modules = select_modules(enabled=Settings().modules or None)
+    except Exception as exc:  # misconfiguration is reported by the command that needs it
+        typer.secho(f"could not look for module commands: {exc}", err=True, fg="yellow")
+        return
+    for loaded in modules:
+        hook = getattr(loaded.module, "register_cli", None)
+        if hook is None:
+            continue
+        try:
+            hook(app)
+        except Exception as exc:
+            typer.secho(f"module {loaded.name!r} could not add its commands: {exc}", err=True, fg="yellow")
+
+
+_load_module_commands()
 
 
 if __name__ == "__main__":

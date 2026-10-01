@@ -181,6 +181,26 @@ def _import_submodules(modules: Sequence[LoadedModule]) -> None:
             submodule(module, name)
 
 
+def module_path(module: LoadedModule, name: str) -> Path | None:
+    """A directory called ``name`` next to the module's ``__init__.py``, if there is one.
+
+    How a module ships things that are not Python registration: ``migrations/``
+    (revision files for the default database) and ``templates/`` (Jinja files
+    that override or extend the framework's). A single-file module has no
+    directory beside it, and so ships neither.
+    """
+    where = getattr(module.module, "__file__", None)
+    if not where or Path(where).name != "__init__.py":
+        return None
+    path = Path(where).parent / name
+    return path if path.is_dir() else None
+
+
+def module_paths(modules: Sequence[LoadedModule], name: str) -> list[Path]:
+    """:func:`module_path` for every module that has one, in load order."""
+    return [p for m in modules if (p := module_path(m, name)) is not None]
+
+
 def select(
     *,
     package: str = "modules",

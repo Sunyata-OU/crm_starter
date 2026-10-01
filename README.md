@@ -165,15 +165,24 @@ module ships as its own package — the companion
 repository is the worked example, and where the Redis provider for the job
 queue lives.
 
-A module package may also carry two files the loader looks for by name:
+A module package may also carry things the loader looks for by name:
 
-| File | Purpose |
+| Name | Purpose |
 | --- | --- |
 | `schema.py` | tables, declared against `app.schema.metadata` — picked up by `crm migrate` and `crm seed` |
 | `seed.py` | a `seed(ctx)` coroutine filling them with sample data |
+| `migrations/` | alembic revisions for the module's tables. `crm migrate` runs them with the framework's, so a revision chains onto a framework revision (`down_revision`) and the module can live in its own package. Default database only |
+| `templates/` | Jinja files searched before the framework's, for the pages the module's actions render and for overrides |
+| `register_cli(app)` | a function adding commands to `crm`, e.g. a sweep to run from cron |
 
 Only enabled modules have these imported, which is why an optional module's
-tables stay out of a migration generated without it.
+tables stay out of a migration generated without it. Because a module's
+revisions branch off the framework's, `crm migrate` upgrades to `heads`, and a
+module that has been migrated should not be disabled again without downgrading
+it first: the database remembers a revision the code can no longer find.
+Write a module's migration so it can run on a database that already has its
+table (check before creating), which is what lets a feature move between the
+framework and a module package without a hand-run `alembic stamp`.
 
 Modules load in dependency order and may extend one another, so a module can
 add a column or a field to a resource another module declared without editing
