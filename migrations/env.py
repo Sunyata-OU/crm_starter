@@ -1,6 +1,6 @@
 """Alembic's entry point.
 
-Three things are wired up here that a generated env.py does not do.
+Four things are wired up here that a generated env.py does not do.
 
 The database URL comes from ``connections.yaml`` rather than ``alembic.ini``,
 so there is one place to configure it.
@@ -16,6 +16,10 @@ is tracked in its own version table. Both matter: without the narrowing,
 autogenerate proposes creating every other database's tables here, and without
 the separate version table two databases at different revisions would each
 believe they were at the other's.
+
+Finally, autogenerate is told to ignore tables it does not know about. A
+database is not necessarily this application's alone -- see ``include_name``
+below, which is the difference between a shared database and a catastrophe.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import re
 from logging.config import fileConfig
+from typing import Any
 
 from alembic import context
 from sqlalchemy.ext.asyncio import async_engine_from_config
@@ -30,7 +35,7 @@ from sqlalchemy.pool import NullPool
 
 from app.core.connections import ConnectionRegistry
 from app.core.modules import select as select_modules
-from app.core.placement import DEFAULT_CONNECTION, metadata_for, placement
+from app.core.placement import DEFAULT_CONNECTION, is_declared, metadata_for, placement
 from app.schema import metadata
 from app.settings import get_settings
 
@@ -93,6 +98,31 @@ def target_metadata():
     return metadata_for(metadata, mine)
 
 
+#: Computed once: building it loads every enabled module.
+_metadata_cache: Any = None
+
+
+def target_metadata_cached():
+    global _metadata_cache
+    if _metadata_cache is None:
+        _metadata_cache = target_metadata()
+    return _metadata_cache
+
+
+def include_name(name: str | None, type_: str, parent_names: dict) -> bool:
+    """Whether autogenerate is allowed to have an opinion about ``name``.
+
+    The rule, and the reason for it, are in
+    :func:`app.core.placement.is_declared` -- kept there rather than here so it
+    can be tested, since this file only runs inside alembic.
+    """
+    if type_ != "table":
+        # Indexes and constraints are reached through a table that has already
+        # been judged, so there is nothing left to decide.
+        return True
+    return is_declared(name, target_metadata_cached().tables, version_table())
+
+
 def run_migrations_offline() -> None:
     """Emit SQL to stdout instead of running it.
 
@@ -101,12 +131,13 @@ def run_migrations_offline() -> None:
     """
     context.configure(
         url=database_url(),
-        target_metadata=target_metadata(),
+        target_metadata=target_metadata_cached(),
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
         render_as_batch=True,
         version_table=version_table(),
+        include_name=include_name,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -115,7 +146,7 @@ def run_migrations_offline() -> None:
 def do_run_migrations(connection) -> None:
     context.configure(
         connection=connection,
-        target_metadata=target_metadata(),
+        target_metadata=target_metadata_cached(),
         # Type changes are detected too; without this a column changing from
         # String(60) to String(200) passes unnoticed.
         compare_type=True,
@@ -124,6 +155,7 @@ def do_run_migrations(connection) -> None:
         # both SQLite and PostgreSQL.
         render_as_batch=True,
         version_table=version_table(),
+        include_name=include_name,
     )
     with context.begin_transaction():
         context.run_migrations()

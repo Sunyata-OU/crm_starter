@@ -394,7 +394,7 @@ def _match_zone(column: ColumnElement[Any], value: Any) -> Any:
     asyncpg refuses to compare an aware datetime with ``timestamp without time
     zone`` ("can't subtract offset-naive and offset-aware datetimes"), and the
     filter layer produces aware ones -- ``@month_start`` and any ISO string
-    with an offset. proffyhub and proffy-jobs store naive UTC, so the bound is
+    with an offset. many schemas store naive UTC, so the bound is
     converted to UTC and stripped of its zone.
     """
     if not isinstance(value, datetime_type) or value.tzinfo is None:
