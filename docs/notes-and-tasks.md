@@ -150,3 +150,33 @@ addressed to (email, falling back to the subject); the other sources are
 `label`, `email` and `subject`. A value the caller supplied is never
 overwritten: an import carrying its own "raised by" is stating a fact the
 stamp cannot improve on.
+
+## Work raised by other systems
+
+Other systems can raise tasks when something needs a person, and close them
+when that stops being true. They do it by `POST /events/tasks` with a bearer
+token that has the `integration` role (issue one from Administration → API
+tokens), ideally from a transactional outbox on their side, so a message
+survives a restart and is retried. Nothing here polls.
+
+```json
+{"type": "raise", "key": "crm:contact:7:review",
+ "title": "Contact needs review: Ada", "body": "…",
+ "resource": "contacts", "record_id": "7", "priority": "normal"}
+{"type": "resolve", "key": "crm:contact:7:review"}
+```
+
+Both are idempotent on `key` (`tasks.source_key`, unique among open tasks), so a
+retry after a lost response does not raise the work twice. Raising returns 201,
+a repeat 200 `duplicate`.
+
+**Who is told.** A task nobody owns is announced once to everybody in the staff
+directory (`Registry.staff_directory`, or `CRM_TASK_WATCHERS` when it names
+somebody) and stays in their bell. The moment it has an assignee -- by the form,
+the *Assign to me* action, an inline edit, anything that writes through the
+provider -- the announcement is marked read for everybody and only the assignee
+is told. Finishing or cancelling withdraws it for good. This is
+`AnnouncingProvider`, wrapped on the tasks resource via `Resource.provider_wrap`;
+the sweep has no part in it beyond due-date reminders.
+
+Needs `crm migrate` (adds `tasks.source_key`).

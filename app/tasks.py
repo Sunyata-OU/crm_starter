@@ -26,7 +26,7 @@ from datetime import timedelta
 from typing import Any
 
 from app.core.clock import utcnow
-from app.core.query import Condition, ListQuery, Op, Sort, SortDir, or_
+from app.core.query import Condition, ListQuery, Op, Sort, SortDir, and_, or_
 from app.core.results import Ctx, Record
 from app.notify.base import Kind, Notification, Priority
 
@@ -37,6 +37,12 @@ RESOURCE = "tasks"
 
 #: States a task is still somebody's problem in.
 OPEN_STATES = ("open", "doing", "blocked")
+
+#: What ``notified_assignee`` holds once a task nobody owns has been announced
+#: to everybody. It is not an address, so the moment a real assignee appears
+#: the hand-over comparison sees a change and tells them -- and that change is
+#: also what tells the sweep to withdraw the announcement from everyone else.
+ANNOUNCED = "*"
 
 #: How far ahead a due date is worth a warning. A day: long enough to do
 #: something about it, short enough that the warning is still about today.
@@ -105,6 +111,63 @@ def handover(task: Record | dict[str, Any]) -> Notification | None:
         record_id=str(task.get("record_id") or ""),
         actor=str(task.get("created_by") or ""),
     )
+
+
+def announcement(task: Record | dict[str, Any], watchers: Sequence[str]) -> list[Notification]:
+    """"There is new work and nobody is on it", once, to everybody who could take it.
+
+    Unlike the unassigned alert this does not wait for a due date: a task
+    nobody owns is news the moment it exists. It is addressed to the task
+    itself, not the record it concerns, so it can be found again to be
+    withdrawn -- ``url`` still goes to the record, which is what the reader
+    wants to look at.
+    """
+    if str(task.get("assignee") or "").strip() or str(task.get("notified_assignee") or "").strip():
+        return []
+    creator = str(task.get("created_by") or "")
+    return [
+        Notification(
+            recipient=watcher,
+            title=f"New: {task.get('title')}",
+            body=_describe(task),
+            kind=Kind.INFO,
+            priority=_priority(task),
+            url=link(task),
+            resource=RESOURCE,
+            record_id=str(task.get("id")),
+            actor=creator,
+        )
+        for watcher in watchers
+    ]
+
+
+async def withdraw(task: Record | dict[str, Any], ctx: Ctx) -> int:
+    """Take a task's announcement off everybody's bell.
+
+    Marked read rather than deleted: the history of who was told what is worth
+    keeping, and an unread count that drops is all anybody needs to see.
+    """
+    from app.notify import notifier
+
+    if notifier.provider is None:
+        return 0
+    page = await notifier.provider.list(
+        ListQuery(
+            filter=and_(
+                Condition("resource", Op.EQ, RESOURCE),
+                Condition("record_id", Op.EQ, str(task.get("id"))),
+                Condition("kind", Op.EQ, str(Kind.INFO)),
+                Condition("read_at", Op.IS_NULL, None),
+            ),
+            page_size=500,
+            with_total=False,
+        ),
+        ctx,
+    )
+    now = utcnow()
+    for row in page.items:
+        await notifier.provider.update(row.pk, {"read_at": now}, ctx)
+    return len(page.items)
 
 
 def reminder(task: Record | dict[str, Any], *, now=None, window: timedelta = DUE_WINDOW):
@@ -241,6 +304,8 @@ async def sweep(
     for task in rows:
         note = handover(task)
         if note is not None:
+            if str(task.get("notified_assignee") or "") == ANNOUNCED:
+                await withdraw(task, ctx)  # assigned behind the provider's back
             if await notifier.send(note, ctx) is not None:
                 counts["assigned"] += 1
             await tasks.provider.update(
@@ -270,3 +335,101 @@ async def sweep(
             counts["assigned"], counts["due"], counts["unassigned"],
         )
     return counts
+
+
+async def everyone(registry: Any, ctx: Ctx) -> list[str]:
+    """Every back-office user: the people who could take a task nobody owns."""
+    return list(await _effective_watchers(registry, ctx, ()))
+
+
+class AnnouncingProvider:
+    """Tells people about a task on whichever path changed it.
+
+    Wraps the tasks provider (see ``Resource.provider_wrap``), so the form, the
+    "Assign to me" action, an inline edit and the events endpoint all behave
+    the same, with no sweep involved. A task nobody owns is announced to
+    everybody once and stays in their bell; the moment it has an assignee the
+    announcement is withdrawn from everyone and only the assignee is told; a
+    finished or cancelled task is withdrawn for good.
+
+    The decision is made from the record's *state* after the write, not from a
+    diff, so it is idempotent: settling a task that is already settled does
+    nothing, and ``notified_assignee`` records what was said. Bookkeeping goes
+    straight to the wrapped provider, so it cannot recurse.
+    """
+
+    #: Only writes that touch one of these can change what should be said.
+    WATCHED = frozenset({"assignee", "state"})
+
+    def __init__(self, inner: Any, registry: Any) -> None:
+        self.inner = inner
+        self.registry = registry
+        self.name = f"announcing({getattr(inner, 'name', '?')})"
+        self.capabilities = inner.capabilities
+
+    def __getattr__(self, attr: str) -> Any:
+        # list / get / aggregate / delete / warm / health pass straight through.
+        return getattr(self.inner, attr)
+
+    async def create(self, data: dict[str, Any], ctx: Ctx) -> Any:
+        result = await self.inner.create(data, ctx)
+        await self._settle(result, ctx)
+        return result
+
+    async def update(self, pk: Any, data: dict[str, Any], ctx: Ctx) -> Any:
+        result = await self.inner.update(pk, data, ctx)
+        if self.WATCHED & set(data):
+            await self._settle(result, ctx)
+        return result
+
+    async def update_if(
+        self, pk: Any, data: dict[str, Any], expect: dict[str, Any], ctx: Ctx
+    ) -> Any:
+        result = await self.inner.update_if(pk, data, expect, ctx)
+        if result is not None and self.WATCHED & set(data):
+            await self._settle(result, ctx)
+        return result
+
+    async def _settle(self, result: Any, ctx: Ctx) -> None:
+        task = getattr(result, "record", None)
+        if task is None:
+            return
+        try:
+            await self._announce(task, ctx)
+        except Exception:
+            # Telling people is never allowed to fail the write it follows.
+            log.exception("could not settle notifications for task %s", task.get("id"))
+
+    async def _announce(self, task: Record, ctx: Ctx) -> None:
+        from app.notify import notifier
+
+        told = str(task.get("notified_assignee") or "").strip()
+        assignee = str(task.get("assignee") or "").strip()
+
+        if str(task.get("state")) not in OPEN_STATES:
+            if told == ANNOUNCED:
+                await withdraw(task, ctx)
+            return
+
+        if assignee:
+            if assignee == told:
+                return
+            if told == ANNOUNCED:
+                await withdraw(task, ctx)
+            note = handover(task)
+            if note is not None:
+                await notifier.send(note, ctx)
+            await self.inner.update(task.pk, {"notified_assignee": assignee}, ctx)
+            return
+
+        if told:
+            return  # already announced, and nobody has taken it yet
+        people = await everyone(self.registry, ctx)
+        if not people:
+            # Leave it unannounced rather than recording a telling that reached
+            # nobody: the next write to this task tries again.
+            log.warning("task %s is unassigned but nobody resolved to tell", task.get("id"))
+            return
+        for item in announcement(task, people):
+            await notifier.send(item, ctx)
+        await self.inner.update(task.pk, {"notified_assignee": ANNOUNCED}, ctx)

@@ -12,7 +12,7 @@ for the rest.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 from app.core.errors import RegistryError
@@ -79,6 +79,11 @@ class Resource:
         #: the provider, so every path that creates a record stamps it -- the
         #: form, an action, the API, a script.
         stamp: dict[str, str] | None = None,
+        #: Wraps the provider once it is built, just above stamping and below
+        #: auditing. For behaviour that must follow *every* write to the
+        #: resource whatever made it -- the form, an action, the API -- which
+        #: is the same argument ``stamp`` makes for who-created-it.
+        provider_wrap: Callable[[Any], Any] | None = None,
         #: A column to fill with a sequential, human-quotable identifier --
         #: ``"T-1042"``, an invoice number -- once a record exists and its
         #: primary key is known, as ``(column, prefix)``. Applied in the
@@ -121,6 +126,7 @@ class Resource:
         self.timeline = timeline
         self.audited = audited
         self.stamp = dict(stamp or {})
+        self.provider_wrap = provider_wrap
         self.sequence = sequence
         #: Bound by the registry once connections are open.
         self.provider: Any = None

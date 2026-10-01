@@ -252,10 +252,18 @@ tasks = Table(
     # date.
     Column("notified_assignee", String(160)),
     Column("reminded_at", Instant),
+    # The other system's key for the condition this task is about, when one
+    # raised it: what makes delivering the same event twice harmless.
+    Column("source_key", String(160)),
     *timestamps(),
     # The sweep's query -- open tasks, by when they are due -- and the list's
     # default sort.
     Index("ix_tasks_open", "state", "due_at"),
+    Index(
+        "uq_tasks_open_source_key", "source_key", unique=True,
+        postgresql_where=text("source_key IS NOT NULL AND state IN ('open', 'doing', 'blocked')"),
+        sqlite_where=text("source_key IS NOT NULL AND state IN ('open', 'doing', 'blocked')"),
+    ),
 )
 
 #: Background work that must survive the worker that raised it.
