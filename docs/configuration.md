@@ -147,6 +147,21 @@ Covered in [`scaling.md`](scaling.md).
 | `CRM_MAP_TILE_URL` | OpenStreetMap | Tiles for map views. The public OSM server is fine while you are building and against its usage policy for a deployment of any size -- point it at your own or a commercial one. Empty turns a map into a list of located records, which is also what an air-gapped install wants: tiles are the only thing on any page that leaves the network. |
 | `CRM_MAP_ATTRIBUTION` | `© OpenStreetMap contributors` | Credit shown on the map. Change it with the tile server. |
 
+## Keycloak accounts
+
+Read by the optional `keycloak_accounts` module (`CRM_MODULES=keycloak_accounts`);
+see [`keycloak.md`](keycloak.md). Inert unless that module is enabled.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `CRM_KEYCLOAK_URL` | — | Keycloak's base URL. Required for impersonation. |
+| `CRM_KEYCLOAK_REALM` | `master` | The realm the accounts screen reads. |
+| `CRM_KEYCLOAK_CONNECTION` | `api.keycloak` | The `connections.yaml` REST connection carrying admin credentials for the realm. |
+| `CRM_KEYCLOAK_ROLES` | `admin` | The staff roles: their holders are listed and may be `@mentioned`. Every name must exist, or Keycloak answers 404. |
+| `CRM_KEYCLOAK_CLIENT` | — | The clientId those roles are defined on, when they are *client* roles. Empty reads realm-role membership. |
+| `CRM_KEYCLOAK_CLIENT_UUID` | — | That client's internal uuid, to skip the startup lookup. |
+| `CRM_KEYCLOAK_FRONTEND_URL` | — | Where to land after impersonating. Empty lands on Keycloak's account page. |
+
 ## Production checks
 
 `Settings.check()` runs at startup and is what `crm serve` refuses on. It
