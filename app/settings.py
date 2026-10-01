@@ -114,6 +114,31 @@ class Settings(BaseSettings):
     #: silently disappearing.
     oidc_keep_access_token: bool = False
 
+    # -- keycloak_accounts ----------------------------------------------------
+    #: Read by the optional ``keycloak_accounts`` module, which lists who holds
+    #: the staff roles in a realm and lets an administrator sign in as one of
+    #: them. Inert unless that module is enabled.
+    #:
+    #: The Keycloak base URL, e.g. ``https://auth.example.com``. Needed to send
+    #: the browser to the impersonation endpoint.
+    keycloak_url: str = ""
+    keycloak_realm: str = "master"
+    #: The ``connections.yaml`` REST connection carrying admin credentials for
+    #: the realm, which the accounts list is read through.
+    keycloak_connection: str = "api.keycloak"
+    #: The roles whose holders are "the staff": listed on the accounts screen
+    #: and offered to ``@mention``. Each must exist -- Keycloak answers 404 for
+    #: a role it does not have, which would take the screen down.
+    keycloak_roles: CsvList = ["admin"]
+    #: The clientId those roles are defined on, when they are *client* roles
+    #: rather than realm roles. Empty reads the realm-role endpoint.
+    keycloak_client: str = ""
+    #: That client's internal uuid, to skip the lookup of it at startup.
+    keycloak_client_uuid: str = ""
+    #: Where to land after impersonating -- the application the impersonated
+    #: session is for. Empty lands on Keycloak's own account page.
+    keycloak_frontend_url: str = ""
+
     #: Optional modules to switch on, by name. Additive: the platform's own
     #: modules load whatever this says, so listing the demo here cannot leave
     #: an application without accounts or access control.
@@ -235,7 +260,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "auth_providers", "modules", "dev_auth_roles", "proxy_trusted_ips",
-        "task_watchers", "helpdesk_watchers",
+        "task_watchers", "helpdesk_watchers", "keycloak_roles",
         "notify_channels",
         mode="before",
     )
