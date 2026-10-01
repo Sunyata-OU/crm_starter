@@ -145,6 +145,30 @@ def placement(registry, *, default: str = DEFAULT_CONNECTION) -> Placement:
     return Placement(claimed=claimed, default=default, elsewhere=frozenset(elsewhere))
 
 
+def is_declared(name: str | None, declared: Iterable[str], version_table: str) -> bool:
+    """Whether a table found in a database is one this application declares.
+
+    Alembic's working assumption is that the metadata describes the whole
+    database, so a table present in the database and absent from the metadata
+    has been deleted by the developer -- and autogenerate writes the
+    ``op.drop_table`` to match.
+
+    That assumption does not hold when the database belongs to something else
+    as well. A ``db.main`` may be the retired database of an older system:
+    some six hundred tables, of which a handful are ours. Left to its
+    default, autogenerate would propose dropping all the others, and the
+    migration it wrote would look completely ordinary right up until it ran.
+
+    Hence the inversion: the declarations are treated as a claim over *those
+    tables only*, never as a description of the database. The cost is that a
+    table genuinely removed from the declarations must be dropped by hand,
+    which is the right amount of friction for a DROP.
+    """
+    if name is None:
+        return True
+    return name in set(declared) or name == version_table
+
+
 def metadata_for(source: MetaData, tables: set[str]) -> MetaData:
     """A copy of ``source`` holding only ``tables``.
 
