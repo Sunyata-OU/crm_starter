@@ -610,6 +610,50 @@ class TestAChartOverTime:
         assert view.sort[0].dir is SortDir.DESC
 
 
+class TestAChartOverDecimals:
+    """A SUM over a numeric column comes back as ``Decimal`` from PostgreSQL;
+    the chart divides it by a float maximum, which ``Decimal`` refuses."""
+
+    @pytest.fixture
+    def client(self, settings):
+        from decimal import Decimal
+
+        from app.core.query import Agg, Measure
+
+        registry = build_registry()
+        registry.add_resource(
+            Resource(
+                "revenue",
+                provider=MemoryProvider(
+                    [
+                        {"id": 1, "month": "2026-01", "amount": Decimal("900.50")},
+                        {"id": 2, "month": "2026-02", "amount": Decimal("100.25")},
+                    ]
+                ),
+                fields=[
+                    TextField("id", in_form=False),
+                    TextField("month"),
+                    DecimalField("amount"),
+                ],
+                views=[
+                    ChartView(name="by_size", group_by="month",
+                              measure=Measure(Agg.SUM, "amount")),
+                ],
+            )
+        )
+        client = TestClient(create_app(settings=settings, registry=registry))
+        client.__enter__()
+        sign_in(client, email="admin@example.com", roles=["admin"])
+        yield client
+        client.__exit__(None, None, None)
+
+    def test_the_page_renders(self, client):
+        response = client.get("/r/revenue?view=by_size")
+        assert response.status_code == 200
+        assert "--pct:100.0%" in response.text
+        assert "--pct:11.1%" in response.text
+
+
 class TestTheDashboardView:
     @pytest.fixture
     def client(self, settings):

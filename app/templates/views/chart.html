@@ -16,14 +16,15 @@
         {% for row in rows %}
           {% set raw = row.get(spec.group_by) %}
           {% set label = labels.get(spec.group_by, {}).get(raw, raw if raw is not none else '—') %}
-          {% set value = row.get(spec.measure.alias) or 0 %}
+          {# float(): a SUM over a numeric column is a Decimal, which cannot be divided by max_value. #}
+          {% set value = (row.get(spec.measure.alias) or 0)|float %}
           {% set pct = (value / max_value * 100) if max_value else 0 %}
           <li class="chart-row">
             <span class="chart-label" title="{{ label }}">{{ label }}</span>
             <span class="chart-track">
               <span class="chart-bar" style="--pct:{{ '%.1f'|format(pct) }}%"></span>
             </span>
-            <span class="chart-value">{{ '{:,.0f}'.format(value|float) }}</span>
+            <span class="chart-value">{{ '{:,.0f}'.format(value) }}</span>
           </li>
         {% endfor %}
       </ol>
