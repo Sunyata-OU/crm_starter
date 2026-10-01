@@ -51,16 +51,19 @@ CRM_MODULES=demo_crm,demo_sales uv run crm dev
 
 | Module | Ships enabled? | Contains |
 | --- | --- | --- |
-| `core_identity` | always | users, API tokens |
+| `core_identity` | always | users, API tokens (expiry, rotation, last-used) |
 | `core_access` | always | roles, permissions, audit log, notifications |
+| `core_tasks` | always | tasks — work a person owes, assignable, with a due-date sweep and an events endpoint |
+| `core_helpdesk` | opt-in | support tickets, a thread per ticket, a sweep |
+| `keycloak_accounts` | opt-in | the staff roster from a Keycloak realm, and signing in as an account with a log |
 | `demo_crm` | opt-in | companies, contacts — group tree, office map |
 | `demo_sales` | opt-in | deals, activities — board, calendar, charts, gantt, activity grid, dashboard, custom actions |
 | `demo_remote` | opt-in | a REST-backed resource and a queued write |
 | `demo_archive` | opt-in | one resource served from two databases at once |
 
-`CRM_MODULES` is additive: it names the optional modules to switch on. The two
-`core_` modules load regardless, so no setting can produce an application
-nobody is able to administer.
+`CRM_MODULES` is additive: it names the optional modules to switch on. The
+always-on `core_` modules load regardless, so no setting can produce an
+application nobody is able to administer.
 
 Sign in with `admin@example.com` / `demo-password`. Two other accounts show
 row-level scoping in action once the demo is on:
@@ -84,6 +87,8 @@ row-level scoping in action once the demo is on:
 | **Auth** | password, OIDC/SSO, gateway headers, API tokens — chained |
 | **Files** | uploads to local disk or S3-compatible storage, permission-checked downloads |
 | **Notifications** | in-app bell, email, webhooks, and scheduled reminders |
+| **Notes & tasks** | an activity panel on every record (notes, `@mentions`, attachments, audited changes) and an assignable task queue; other systems raise tasks through `POST /events/tasks` |
+| **Staff directory** | a module can declare who the staff are, so mentions and unassigned-work alerts resolve against them |
 | **Background jobs** | a durable queue with claims, retries, backoff and leases — `crm worker`, on any store with a conditional write |
 | **Passwords** | change, admin reset, emailed single-use reset links, lockout — *only where the auth provider owns the password* |
 | **Caching** | optional, shared or in-process, off by default |
@@ -202,6 +207,9 @@ app/templates/fields/display/currency.html
 - [`docs/resources.md`](docs/resources.md) — the declaration reference
 - [`docs/auth.md`](docs/auth.md) — the four auth providers, RBAC and the audit trail
 - [`docs/files-and-notifications.md`](docs/files-and-notifications.md) — file storage backends and notification channels
+- [`docs/notes-and-tasks.md`](docs/notes-and-tasks.md) — the activity panel, notes, the task queue, the staff directory, and work raised by other systems
+- [`docs/helpdesk.md`](docs/helpdesk.md) — support tickets and the seam an inbound-mail branch plugs into
+- [`docs/keycloak.md`](docs/keycloak.md) — the staff roster from a Keycloak realm, and impersonation
 - [`docs/scaling.md`](docs/scaling.md) — measuring cost, tuning one host, running several
 
 ## Testing
