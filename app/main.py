@@ -25,7 +25,7 @@ from app.auth.proxy_header import ProxyHeaderAuth
 from app.auth.session import SessionStore
 from app.core.connections import ConnectionRegistry
 from app.core.errors import ConfigError
-from app.core.modules import load_modules
+from app.core.modules import load_modules, module_paths
 from app.core.registry import Registry
 
 # Imported for its side effects: providers register their connection types and
@@ -276,10 +276,13 @@ def create_app(settings: Settings | None = None, registry: Registry | None = Non
         secure=settings.cookie_secure,
         samesite=settings.cookie_samesite,
     )
+    built = registry if registry is not None else build_registry(settings)
     app.state.crm = AppState(
         settings=settings,
-        registry=registry if registry is not None else build_registry(settings),
-        templates=Templates(settings),
+        registry=built,
+        # A module's own ``templates/`` come first, so it can override a
+        # framework template and ship the ones its actions render.
+        templates=Templates(settings, extra_dirs=tuple(module_paths(built.loaded_modules, "templates"))),
         auth=AuthChain([]),
         csrf=CSRFProtection(settings.secret_key, enabled=settings.csrf_enabled),
         sessions=sessions,
