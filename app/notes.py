@@ -23,6 +23,16 @@ on the same record, plus anyone the new note names. A back office is small
 enough for that to be the right answer, and it needs no directory of users --
 which matters here, because identity comes from Keycloak and there is no local
 account table to look anyone up in.
+
+**A mention may only reach back-office staff.** `@someone@gmail.com` in a note
+body used to be taken at face value -- a note is an internal conversation, but
+the parser could not tell a colleague's handle from an arbitrary address typed
+by whoever is signed in. Where a directory exists (``Registry.staff_directory``, which a module
+sets), a mention only
+resolves to somebody in it -- see `resolve_handles` and `staff_directory`.
+Where there is none -- a plain install, or a stateless one -- the original
+behaviour survives unchanged: an address is taken as written, and a handle is
+matched against the people already on the record and then the `users` table.
 """
 
 from __future__ import annotations
@@ -30,6 +40,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time as time_module
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -38,6 +49,19 @@ from app.core.results import Ctx, Identity, Record
 from app.notify.base import Kind, Notification
 
 log = logging.getLogger("crm.notes")
+
+#: How long a fetched staff directory is trusted before being re-read. Every
+#: note write and every autocomplete keystroke wants this; an identity provider's admin
+#: API is not sized for either, and "who may be mentioned" does not need to be
+#: current to the second.
+DIRECTORY_TTL = 300.0
+
+#: (expiry, people). One entry, keyed implicitly: a deployment has at most one
+#: staff directory, so there is nothing to key on. A module-level cache
+#: rather than an object living on the registry because `resolve_handles` is
+#: called from wherever a note is written, several calls deep from anything
+#: holding a registry reference of its own.
+_directory_cache: tuple[float, list[dict[str, str]]] | None = None
 
 #: The resource notes are stored through. Absent in a deployment with no
 #: database of its own, which is the case this module has to survive.
@@ -56,9 +80,10 @@ MAX_FILES = 5
 #: load for that record.
 MAX_BODY = 8000
 
-#: ``@`` followed by an address or a handle. The address form is the one that
-#: always works; the handle form is resolved against the people already on the
-#: record, and against the account table when there is one.
+#: ``@`` followed by an address or a handle. Extraction only -- what either
+#: form resolves *to* is `resolve_handles`'s decision, and differs by
+#: deployment: a bare address is trusted as written only where there is no
+#: staff directory to check it against.
 #:
 #: The lookbehind is what stops an address written in prose -- "write to
 #: sam@example.com" -- being read as a mention of @example.com.
@@ -178,16 +203,28 @@ async def resolve_handles(
 ) -> list[str]:
     """Turn ``@handles`` into recipient identifiers.
 
-    An address is taken as written. A bare handle is matched against the people
-    already on the record, then against the account table if this deployment
-    has one. A handle that matches nothing is dropped rather than guessed at:
-    a notification sent to a misspelling is one nobody receives and everybody
-    assumes was received.
+    Where this deployment has a staff directory (see `staff_directory`), a
+    mention -- address or bare handle alike -- only resolves to somebody in
+    it: a note is an internal conversation, and a free-form ``@address``
+    notifying anybody who can be typed is not a feature, it is a way to spam
+    an inbox that happens to belong to whoever is signed in.
+
+    Where there is no directory, the original rule applies: an address is
+    taken as written, and a bare handle is matched against the people already
+    on the record, then against the account table if this deployment has one.
+
+    Either way, a handle that matches nothing is dropped rather than guessed
+    at: a notification sent to a misspelling is one nobody receives and
+    everybody assumes was received.
     """
+    people = await staff_directory(registry, ctx) if registry is not None else None
     resolved: list[str] = []
     for handle in handles:
-        if "@" in handle:
-            match: str | None = handle
+        match: str | None
+        if people is not None:
+            match = _match_directory(handle, people, known)
+        elif "@" in handle:
+            match = handle
         else:
             match = _match_known(handle, known)
             if match is None and registry is not None:
@@ -227,6 +264,120 @@ async def _match_users(handle: str, registry: Any, ctx: Ctx | None) -> str | Non
     # way is precisely when picking one is wrong.
     if len(items) == 1:
         return str(items[0].get("email") or "") or None
+    return None
+
+
+async def staff_directory(registry: Any, ctx: Ctx | None) -> list[dict[str, str]] | None:
+    """Who may be @mentioned, or ``None`` where this deployment has nobody to check against.
+
+    ``None`` -- no ``Registry.staff_directory`` declared -- is different from an *empty
+    list*: the former tells `resolve_handles` to fall back to its original,
+    unrestricted behaviour, so an install that never had a directory is not
+    broken by one being introduced elsewhere. The latter means the directory
+    exists but could not be read just now, and every mention on this write
+    resolves to nobody rather than falling back -- a directory that is merely
+    unreachable must not become a hole that lets a mention through it would
+    otherwise have refused.
+
+    Cached for `DIRECTORY_TTL`, because this is consulted on every note write
+    and every autocomplete keystroke.
+    """
+    global _directory_cache
+    declared = getattr(registry, "staff_directory", None)
+    if declared is None or not registry.has_resource(declared.resource):
+        return None
+    now = time_module.monotonic()
+    if _directory_cache is not None and _directory_cache[0] > now:
+        return _directory_cache[1]
+    resource = registry.resource(declared.resource)
+    try:
+        # Sorted, because a directory that is a union of several sources has to
+        # merge every row of every source before it can know which come first
+        # when unsorted -- which trips the row budget on a directory of any
+        # size and would leave this empty.
+        page = await resource.provider.list(
+            ListQuery(
+                sort=(Sort(declared.sort_field, SortDir.ASC),), page_size=1000, with_total=False
+            ),
+            ctx or Ctx.system(),
+        )
+    except Exception:
+        log.warning("could not read the staff directory to resolve @mentions", exc_info=True)
+        return []
+    people: list[dict[str, str]] = []
+    for row in page.items:
+        email = str(row.get(declared.email_field) or "").strip()
+        username = str(row.get(declared.username_field) or "").strip()
+        if not email and not username:
+            continue
+        name = " ".join(str(row.get(f) or "") for f in declared.name_fields).strip()
+        people.append({"email": email, "username": username, "label": name or username or email})
+    _directory_cache = (now + DIRECTORY_TTL, people)
+    return people
+
+
+def may_browse_directory(identity: Identity, registry: Any = None) -> bool:
+    """Whether this caller may search who can be @mentioned.
+
+    The suggestions route hands back names and addresses, so it is gated like
+    the roster itself: by holding one of ``StaffDirectory.roles``. An
+    authenticated caller outside that set gets no matches rather than a way to
+    enumerate staff that the roster's own screen would refuse them.
+
+    With no directory declared, or one that names no roles, any signed-in
+    caller may -- consistent with `staff_directory` returning ``None`` and
+    mentions falling back to their original, broader behaviour.
+    """
+    if not identity.is_authenticated:
+        return False
+    declared = getattr(registry, "staff_directory", None)
+    if declared is None or not declared.roles:
+        return True
+    return identity.has_role(*declared.roles)
+
+
+async def mention_suggestions(
+    registry: Any, ctx: Ctx | None, query: str, *, limit: int = 20
+) -> list[dict[str, str]]:
+    """Directory entries matching ``query``, for the ``@`` autocomplete.
+
+    An empty list where there is no directory: the route this backs is only
+    ever useful with one, and offering to search a `users` table that was
+    never meant to be enumerated this way is not this function's decision to
+    make silently.
+    """
+    people = await staff_directory(registry, ctx)
+    if not people:
+        return []
+    wanted = query.strip().lower()
+    if not wanted:
+        return people[:limit]
+    return [
+        p for p in people
+        if wanted in p["email"].lower() or wanted in p["username"].lower()
+        or wanted in p["label"].lower()
+    ][:limit]
+
+
+def _match_directory(handle: str, people: Sequence[dict[str, str]], known: Sequence[str]) -> str | None:
+    """A handle -- address or bare -- against the staff directory.
+
+    "Already on this record" only counts as a mention target when that person
+    is themselves staff: otherwise typing ``@`` plus whatever an outside
+    participant's author label happens to be would resolve just because they
+    had spoken here before, which is the same hole restricting mentions to the
+    directory closes everywhere else.
+    """
+    wanted = handle.lower().lstrip("@")
+    for person in people:
+        email, username = person["email"].lower(), person["username"].lower()
+        if wanted in (email, username, email.split("@", 1)[0]):
+            return person["email"] or person["username"]
+    matched = _match_known(handle, known)
+    if matched and any(
+        matched.lower() in (p["email"].lower(), p["username"].lower()) for p in people
+    ):
+        return matched
     return None
 
 

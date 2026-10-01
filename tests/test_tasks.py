@@ -15,7 +15,7 @@ from starlette.testclient import TestClient
 
 from app import tasks as task_service
 from app.core.clock import utcnow
-from app.core.registry import Registry
+from app.core.registry import Registry, StaffDirectory
 from app.core.results import Ctx, Identity
 from app.fields.types import DateTimeField, StatusField, TextAreaField, TextField
 from app.main import create_app
@@ -102,6 +102,44 @@ async def bound(registry, sent):
     yield registry
     notifier.provider = None
     await registry.close()
+
+
+@pytest.fixture
+def registry_with_directory(registry) -> Registry:
+    """The same registry, plus a declared staff directory to fall back to."""
+    directory = MemoryProvider(
+        [
+            {"id": "1", "email": KIM, "username": "kim", "firstName": "Kim", "lastName": ""},
+            {"id": "2", "email": SAM, "username": "sam", "firstName": "Sam", "lastName": ""},
+        ],
+        searchable_fields=("email",),
+    )
+    registry.add_resource(
+        Resource(
+            "keycloak_users",
+            provider=directory,
+            audited=False,
+            timeline=False,
+            fields=[
+                TextField("id", in_form=False),
+                TextField("email"), TextField("username"),
+                TextField("firstName"), TextField("lastName"),
+            ],
+        )
+    )
+    registry.staff_directory = StaffDirectory("keycloak_users")
+    return registry
+
+
+@pytest.fixture
+async def bound_with_directory(registry_with_directory, sent):
+    await registry_with_directory.bind()
+    notifier.bind(registry_with_directory.resource("notifications").provider)
+    notifier.use([])
+    notifier.background = False
+    yield registry_with_directory
+    notifier.provider = None
+    await registry_with_directory.close()
 
 
 def rows_of(store: MemoryProvider) -> list[dict]:
@@ -205,6 +243,22 @@ class TestWorkNobodyIsOn:
         counts = await task_service.sweep(bound, watchers=[])
         assert counts["unassigned"] == 0
         assert not rows_of(sent)
+
+    async def test_naming_nobody_falls_back_to_the_staff_directory(
+        self, bound_with_directory, store, sent
+    ):
+        store._rows[1] = a_task(assignee=None, due_at=utcnow() - timedelta(hours=1))
+        counts = await task_service.sweep(bound_with_directory, watchers=[])
+        assert counts["unassigned"] == 2
+        assert {n["recipient"] for n in rows_of(sent)} == {KIM, SAM}
+
+    async def test_an_explicit_list_still_overrides_the_directory(
+        self, bound_with_directory, store, sent
+    ):
+        store._rows[1] = a_task(assignee=None, due_at=utcnow() - timedelta(hours=1))
+        counts = await task_service.sweep(bound_with_directory, watchers=["only@example.com"])
+        assert counts["unassigned"] == 1
+        assert {n["recipient"] for n in rows_of(sent)} == {"only@example.com"}
 
 
 class TestThroughTheScreens:

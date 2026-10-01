@@ -195,6 +195,25 @@ def unassigned_alert(
     ]
 
 
+async def _effective_watchers(registry: Any, ctx: Ctx, watchers: Sequence[str]) -> Sequence[str]:
+    """``CRM_TASK_WATCHERS`` where an operator named one, otherwise everybody.
+
+    A task nobody is on should reach whoever *could* pick it up, not sit
+    waiting for an address somebody remembered to configure. Where a staff
+    directory is declared (``Registry.staff_directory``) it is the default; an explicit
+    ``CRM_TASK_WATCHERS`` still overrides it for a deployment that wants a
+    narrower list. Only a deployment with neither is left with nobody told.
+    """
+    if watchers:
+        return watchers
+    from app.notes import staff_directory
+
+    people = await staff_directory(registry, ctx)
+    if not people:
+        return watchers
+    return [p["email"] for p in people if p.get("email")]
+
+
 async def sweep(
     registry: Any,
     ctx: Ctx | None = None,
@@ -214,6 +233,7 @@ async def sweep(
     if tasks is None:
         return {"assigned": 0, "due": 0, "unassigned": 0}
     ctx = ctx or Ctx.system()
+    watchers = await _effective_watchers(registry, ctx, watchers)
     now = utcnow()
     counts = {"assigned": 0, "due": 0, "unassigned": 0}
 

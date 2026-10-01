@@ -38,11 +38,49 @@ anything.
 
 ### Mentions, and who hears about a note
 
-`@somebody@example.com` addresses a person directly. A bare `@handle` is
-resolved against the people already on the record, then against the account
-table where the deployment has one; a handle that matches nothing is dropped
-rather than guessed at, because a notification sent to a misspelling is one
-nobody receives and everybody assumes was received.
+`@somebody@example.com` addresses a person directly; a bare `@handle` is
+resolved against other people. A handle that matches nothing is dropped rather
+than guessed at, because a notification sent to a misspelling is one nobody
+receives and everybody assumes was received.
+
+**Where a staff directory exists**, a mention -- address or handle alike --
+resolves *only* against it: a note is an internal conversation, and
+`@anyone@anywhere` used to be taken at face value, which meant a note could
+notify an address that had never touched the back office. A module
+declares one by setting `registry.staff_directory`:
+
+```python
+from app.core.registry import StaffDirectory
+
+registry.staff_directory = StaffDirectory(
+    "accounts",                    # the resource listing staff
+    roles=("admin", "manager"),    # who may search it; empty = any signed-in caller
+    email_field="email",           # these four are the defaults
+    username_field="username",
+    name_fields=("firstName", "lastName"),
+    sort_field="username",         # a sort the backend can honour
+)
+```
+
+Somebody already on the
+record only counts as a mention target when they are themselves in the
+directory; being first to comment does not let an outsider back in.
+
+The directory is cached for five minutes (`notes.DIRECTORY_TTL`), since it is
+consulted on every note write and every `@` keystroke in the autocomplete
+below. A directory that cannot be read never fails the write: the note
+saves, the mention resolves to nobody, and the failure is logged rather than
+surfaced to whoever was writing the note.
+
+**Where there is no directory** -- a plain install, or no module declaring one -- mentions keep their original, broader behaviour: an address is
+taken as written, and a bare handle is resolved against the people already on
+the record, then against the account table where the deployment has one.
+
+**Autocomplete.** `GET /r/<resource>/<pk>/notes/mentions?q=` backs the `@` box
+in the note form and returns directory entries matching `q`. It is gated
+exactly like the directory itself -- read on the record, and the caller must
+themselves hold one of the directory's `roles` -- so a caller who could not
+open the roster's own screen cannot list staff through the mention box either.
 
 Beyond the people named, a note reaches everyone who has **already written on
 the same record**. That is the whole subscription model: no follower table, no

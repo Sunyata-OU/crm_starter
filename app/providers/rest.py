@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time as time_module
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from datetime import date, datetime, time
@@ -97,6 +97,15 @@ class RestMapping:
     write_envelope: str = ""
     #: Where the created/updated record is in a write response.
     write_items_key: str = ""
+
+    #: Fill in a placeholder in ``path`` that only the backend can answer --
+    #: Keycloak's client uuid for a client-role members endpoint is the
+    #: motivating case: the declaration knows the clientId, not the internal
+    #: id Keycloak assigned it, and the only way to learn it is to ask.
+    #: Called once from ``RestProvider.warm()``, not on every request, so a
+    #: slow or flaky lookup does not sit in a user's request. Left ``None``,
+    #: ``path`` is used exactly as declared.
+    path_resolver: Callable[[RestConnection, str], Awaitable[str]] | None = None
 
 
 def dig(payload: Any, path: str) -> Any:
@@ -470,6 +479,16 @@ class RestProvider(BaseProvider):
     async def _get(
         self, path: str, params: dict[str, Any] | None = None, ctx: Ctx | None = None
     ) -> Any:
+        if "{" in path:
+            # warm() never substituted a path_resolver placeholder -- most
+            # likely the backend was unreachable at startup, or refused the
+            # lookup. Sending it as-is would hit a URL that cannot exist and
+            # come back 404, which list() reads as "zero rows" -- a silent
+            # empty screen where a loud error belongs. See health().
+            raise ProviderError(
+                f"{self.name}: {path!r} still has an unresolved placeholder; "
+                f"its path_resolver did not run or failed at startup -- see /system"
+            )
         try:
             response = await self.connection.client.get(
                 path, params=params or {}, headers=self._caller_headers(ctx)
@@ -592,7 +611,26 @@ class RestProvider(BaseProvider):
         record = self._record(dict(body_out)) if isinstance(body_out, Mapping) else None
         return WriteResult.success(record)
 
+    # -- lifecycle ------------------------------------------------------------
+
+    async def warm(self) -> None:
+        """Resolve a ``path_resolver`` placeholder before any request needs it.
+
+        Left to the first request, a slow or failing lookup would land on
+        whoever happened to arrive first, and a startup failure is easier to
+        notice than a request that quietly 404s. Failing here is fine: the
+        registry logs it and moves on, and every later call refuses loudly
+        rather than silently reading an unresolved path -- see ``_get``.
+        """
+        if self.mapping.path_resolver is not None:
+            self.mapping.path = await self.mapping.path_resolver(self.connection, self.mapping.path)
+
     async def health(self) -> tuple[bool, str]:
+        if self.mapping.path_resolver is not None and "{" in self.mapping.path:
+            return False, (
+                f"{self.name}: {self.mapping.path!r} still has an unresolved "
+                f"placeholder; warm() did not run or failed"
+            )
         try:
             page = await self.list(ListQuery(page_size=1, with_total=False), Ctx.system())
             return True, f"{self.mapping.path}: reachable ({len(page.items)} sample row)"
