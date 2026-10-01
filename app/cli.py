@@ -805,56 +805,6 @@ def tasks_sweep(
     )
 
 
-@app.command("helpdesk-sweep")
-def helpdesk_sweep(
-    window_hours: float | None = typer.Option(
-        None, help="How long an assigned ticket may age before it is mentioned again. "
-                    "Defaults to CRM_HELPDESK_STALE_HOURS."
-    ),
-) -> None:
-    """Announce ticket hand-overs, new unassigned tickets, and quiet ones.
-
-    Run from cron or a scheduler, beside `notify-due` and `tasks-sweep`. Like
-    those it is a sweep and not a timer: it holds no state of its own, reads
-    what the database says now, and records on each ticket what it has
-    already said, so running it twice sends nothing twice.
-    """
-    from datetime import timedelta
-
-    from app import helpdesk
-    from app.main import build_channels, build_registry
-    from app.notify import notifier
-
-    settings = get_settings()
-    registry = build_registry(settings)
-    window = timedelta(hours=window_hours if window_hours is not None
-                        else settings.helpdesk_stale_hours)
-
-    async def go():
-        await registry.bind()
-        notifier.use(build_channels(settings))
-        if not registry.has_resource("tickets"):
-            _fail("No 'tickets' resource is registered.")
-        if registry.has_resource("notifications"):
-            notifier.bind(registry.resource("notifications").provider)
-        # Inline, for the same reason as `notify-due`: a command that exits
-        # before its background tasks finish delivers nothing.
-        notifier.background = False
-        try:
-            return await helpdesk.sweep(
-                registry, watchers=settings.helpdesk_watchers, window=window,
-            )
-        finally:
-            await notifier.drain(timeout=settings.shutdown_timeout)
-            await registry.close()
-
-    counts = asyncio.run(go())
-    _echo(
-        f"Told {counts['assigned']} about a hand-over, {counts['unassigned']} about a new "
-        f"unassigned ticket, and {counts['stale']} about one ageing quietly."
-    )
-
-
 @app.command("notify-test")
 def notify_test(
     recipient: str = typer.Argument(..., help="Who to notify."),

@@ -203,8 +203,6 @@ app/templates/fields/display/currency.html
 - [`auth.md`](auth.md) — the four auth providers, RBAC and the audit trail
 - [`files-and-notifications.md`](files-and-notifications.md) — file storage backends and notification channels
 - [`notes-and-tasks.md`](notes-and-tasks.md) — the activity panel, notes with attachments, and the task queue with its sweep
-- [`keycloak.md`](keycloak.md) — the staff roster from a Keycloak realm, and signing in as an account with a log of who did
-- [`helpdesk.md`](helpdesk.md) — support tickets, the customer-visible thread, and the seam an inbound-mail branch plugs into
 - [`scaling.md`](scaling.md) — measuring cost, tuning one host, running several
 
 ## Testing

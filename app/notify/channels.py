@@ -85,7 +85,7 @@ class EmailChannel(BaseChannel):
         message["To"] = notification.recipient
 
         # A caller that already knows how this message threads -- the
-        # helpdesk reply box, replying to an inbound email -- passes the
+        # ticket reply box, replying to an inbound email -- passes the
         # headers in ``meta`` rather than this channel inventing its own
         # notion of conversations. Left absent by every other caller, which
         # is why ``meta`` starts empty rather than these being fields on
