@@ -361,12 +361,19 @@ class Registry:
         return ensure_full(provider, search_fields=resource.searchable_fields())
 
     def _stamped(self, provider: Provider, resource: Resource) -> Provider:
-        """Wrap a provider so declared columns record who created a record."""
-        if not resource.stamp:
-            return provider
-        from app.providers.stamp import StampingProvider
+        """Wrap a provider so declared columns record who created a record.
 
-        return StampingProvider(provider, resource.stamp)
+        Also where a resource's own ``provider_wrap`` is applied: both are
+        declarations about what every write does, and this is called on both
+        the built and the already-constructed path.
+        """
+        if resource.stamp:
+            from app.providers.stamp import StampingProvider
+
+            provider = StampingProvider(provider, resource.stamp)
+        if resource.provider_wrap is not None:
+            provider = resource.provider_wrap(provider)
+        return provider
 
     async def _build_write_half(self, ref: Any, resource: Resource) -> Provider:
         """The write half of a composite, from a name, an object or a factory.

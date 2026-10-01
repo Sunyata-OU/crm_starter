@@ -41,6 +41,7 @@ from app.web.middleware import CachedStaticFiles, RequestContextMiddleware
 from app.web.ratelimit import RateLimiter
 from app.web.render import Templates
 from app.web.routes import auth as auth_routes
+from app.web.routes import events as event_routes
 from app.web.routes import files as file_routes
 from app.web.routes import notify as notify_routes
 from app.web.routes import resource as resource_routes
@@ -318,6 +319,7 @@ def create_app(settings: Settings | None = None, registry: Registry | None = Non
     app.include_router(resource_routes.router)
     app.include_router(file_routes.router)
     app.include_router(notify_routes.router)
+    app.include_router(event_routes.router)
 
     if settings.static_dir.exists():
         app.mount(

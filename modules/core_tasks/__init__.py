@@ -39,6 +39,7 @@ from app.resources.views import (
     SearchSpec,
     Section,
 )
+from app.tasks import AnnouncingProvider
 
 MANIFEST = {
     "name": "core_tasks",
@@ -66,10 +67,10 @@ PRIORITIES = [
 
 
 def register(registry: Registry) -> None:
-    registry.add_resource(_tasks())
+    registry.add_resource(_tasks(registry))
 
 
-def _tasks() -> Resource:
+def _tasks(registry: Registry | None = None) -> Resource:
     return Resource(
         "tasks",
         provider="db.main#tasks",
@@ -81,6 +82,12 @@ def _tasks() -> Resource:
         default_sort=["due_at"],
         # Who raised it, filled in wherever the task was created from.
         stamp={"created_by": "id", "created_by_name": "label"},
+        # Announces a task nobody owns to everybody, and withdraws that when
+        # somebody takes it -- on every path that writes one. See
+        # `app.tasks.AnnouncingProvider`.
+        provider_wrap=(
+            (lambda provider: AnnouncingProvider(provider, registry)) if registry else None
+        ),
         # Deliberately no RolePolicy: who may see and assign work is exactly
         # the kind of rule an administrator should be able to change from the
         # permissions screen without a deployment. `DbPolicy`'s own default
@@ -121,6 +128,8 @@ def _tasks() -> Resource:
             # somebody asks why they were or were not told.
             TextField("notified_assignee", label="Last told", in_form=False, in_list=False),
             DateTimeField("reminded_at", label="Reminded", in_form=False, in_list=False),
+            TextField("source_key", label="Source key", in_form=False, in_list=False,
+                      in_detail=False),
         ],
         search=SearchSpec(
             fields=("title", "body", "assignee"),
