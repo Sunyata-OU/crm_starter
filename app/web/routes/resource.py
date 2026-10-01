@@ -1788,6 +1788,37 @@ def _note_store(view: View) -> Any:
     return store
 
 
+@router.get("/{resource_name}/{pk}/notes/mentions")
+async def note_mentions(
+    resource_name: str, pk: str, view: View = Depends(build_view)
+) -> Response:
+    """Names and addresses to offer as an ``@`` mention completes.
+
+    Requires read on the record, exactly like the panel it serves -- and, on
+    top of that, that the caller is themselves staff. The response enumerates
+    every staff member's name and address, which is what the roster's own
+    screen shows and nothing more; a caller who could not open that screen
+    must not get the same answer through a mention box instead.
+    """
+    # Raises 404 where this deployment has nowhere to store notes at all --
+    # the same gate every other note route opens with.
+    _note_store(view)
+    view.require_login()
+    resource = view.resource(resource_name)
+    require_can(resource, "read", view.identity)
+    await _load(view, resource, pk)
+    if not notes.may_browse_directory(view.identity, view.registry):
+        return view.json({"options": []})
+
+    term = view.param("q") or ""
+    people = await notes.mention_suggestions(view.registry, view.ctx, term, limit=20)
+    options = [
+        {"value": p["email"] or p["username"], "label": f'{p["label"]} ({p["email"] or p["username"]})'}
+        for p in people
+    ]
+    return view.json({"options": options})
+
+
 @router.post("/{resource_name}/{pk}/notes")
 async def add_note(
     resource_name: str, pk: str, request: Request, view: View = Depends(build_view)

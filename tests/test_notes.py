@@ -14,6 +14,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from app import notes
+from app.core.registry import StaffDirectory
 from app.core.results import Identity
 from app.fields.types import BooleanField, DateTimeField, TextAreaField, TextField
 from app.main import create_app
@@ -77,6 +78,28 @@ def notifications_resource(store: MemoryProvider) -> Resource:
     )
 
 
+def keycloak_users_resource(store: MemoryProvider) -> Resource:
+    """A stand-in for the resource a deployment names as its staff directory.
+
+    `notes.staff_directory` only reads the declared resource -- it does not
+    care that a real one might be a union over an identity provider -- so an
+    ordinary in-memory resource exercises the restriction.
+    """
+    return Resource(
+        "keycloak_users",
+        provider=store,
+        fields=[
+            TextField("id", in_form=False),
+            TextField("username"),
+            TextField("email"),
+            TextField("firstName"),
+            TextField("lastName"),
+        ],
+        audited=False,
+        timeline=False,
+    )
+
+
 @pytest.fixture
 def note_store() -> MemoryProvider:
     """The raw provider, so a test can read what was actually written.
@@ -99,6 +122,44 @@ def registry(note_store, sent):
     registry.add_resource(notes_resource(note_store))
     registry.add_resource(notifications_resource(sent))
     return registry
+
+
+@pytest.fixture(autouse=True)
+def _reset_directory_cache():
+    """`notes.staff_directory`'s TTL cache is module-level state.
+
+    Each test builds its own directory provider, so a directory cached
+    by an earlier test in the same process must not answer a later one --
+    that would be this suite failing for the same reason a stale cache would
+    fail in production, just faster.
+    """
+    notes._directory_cache = None
+    yield
+    notes._directory_cache = None
+
+
+@pytest.fixture
+def directory() -> MemoryProvider:
+    """The raw directory provider, so a test can name who is staff."""
+    return MemoryProvider([], searchable_fields=("email", "username"))
+
+
+@pytest.fixture
+def directory_registry(note_store, sent, directory):
+    registry = build_registry()
+    registry.add_resource(notes_resource(note_store))
+    registry.add_resource(notifications_resource(sent))
+    registry.add_resource(keycloak_users_resource(directory))
+    registry.staff_directory = StaffDirectory("keycloak_users", roles=("admin",))
+    return registry
+
+
+@pytest.fixture
+def directory_client(settings, directory_registry):
+    app = create_app(settings=settings, registry=directory_registry)
+    with TestClient(app, raise_server_exceptions=False) as c:
+        sign_in(c, email="kim@example.com", roles=["admin"])
+        yield c
 
 
 def rows_of(store: MemoryProvider) -> list[dict]:
@@ -394,3 +455,185 @@ class TestParsing:
     def test_the_author_identifier_prefers_the_address(self):
         assert notes.author_id(KIM) == "kim@example.com"
         assert notes.author_id(Identity(subject="abc")) == "abc"
+
+
+class TestMentionsAreRestrictedToTheDirectory:
+    """Where a staff directory exists, a mention may only reach somebody in it.
+
+    Before this, ``@anything@anywhere`` in a note body was taken at face
+    value -- a note is an internal conversation, and there was no way to stop
+    it notifying an address that has never touched the back office.
+    """
+
+    def test_a_free_address_outside_the_directory_is_dropped(self, directory_client, sent):
+        # Sam is nobody's colleague as far as the directory knows.
+        post_note(directory_client, "loop in @sam@example.com")
+        assert not rows_of(sent)
+
+    def test_a_directory_member_addressed_directly_is_notified(self, directory, directory_client, sent):
+        directory._rows[1] = {"id": 1, "username": "sam", "email": "sam@example.com"}
+        post_note(directory_client, "please check this @sam@example.com")
+        assert [n["recipient"] for n in rows_of(sent)] == ["sam@example.com"]
+
+    def test_a_bare_handle_matches_the_directory_by_username(self, directory, directory_client, sent):
+        directory._rows[1] = {"id": 1, "username": "sam", "email": "sam@example.com"}
+        post_note(directory_client, "@sam can you confirm?")
+        assert [n["recipient"] for n in rows_of(sent)] == ["sam@example.com"]
+
+    def test_a_participant_not_in_the_directory_is_not_a_mention_target(
+        self, note_store, directory_client, sent
+    ):
+        # Somebody who commented earlier is normally enough to make "@handle"
+        # resolve to them -- but not here, because they are not staff. They
+        # still get the ordinary "somebody commented" notice every participant
+        # gets regardless of @mentions; what must not happen is the mention
+        # itself resolving to them, which is a different, addressed message
+        # (see notes.notifications_for -- "mentioned" wins over "info" where
+        # both apply, so a still-"info" row proves the mention did not match).
+        note_store._rows[99] = {
+            "id": 99, "resource": "contacts", "record_id": "1", "kind": "note",
+            "body": "Chased them.", "author": "Sam", "author_id": "sam@example.com",
+        }
+        post_note(directory_client, "@sam can you confirm?")
+        notified = rows_of(sent)
+        assert [n["recipient"] for n in notified] == ["sam@example.com"]
+        assert notified[0]["kind"] == "info"
+
+    def test_a_participant_who_is_also_staff_still_resolves(
+        self, directory, note_store, directory_client, sent
+    ):
+        directory._rows[1] = {"id": 1, "username": "sam", "email": "sam@example.com"}
+        note_store._rows[99] = {
+            "id": 99, "resource": "contacts", "record_id": "1", "kind": "note",
+            "body": "Chased them.", "author": "Sam", "author_id": "sam@example.com",
+        }
+        post_note(directory_client, "@sam can you confirm?")
+        assert [n["recipient"] for n in rows_of(sent)] == ["sam@example.com"]
+
+    def test_an_unreachable_directory_does_not_fail_the_note_write(
+        self, directory_registry, settings, sent, note_store
+    ):
+        # A Keycloak that is down is a reason to lose a mention, never a
+        # reason to lose what somebody just typed.
+        app = create_app(settings=settings, registry=directory_registry)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            sign_in(client, email="kim@example.com", roles=["admin"])
+
+            # The provider only exists once the registry has bound, which
+            # happens on the app's startup -- i.e. now that the client above
+            # has entered its context.
+            async def broken_list(*args, **kwargs):
+                raise RuntimeError("Keycloak is unreachable")
+
+            directory_registry.resource("keycloak_users").provider.list = broken_list
+
+            response = post_note(client, "cc @sam@example.com")
+        assert response.status_code == 200
+        assert rows_of(note_store), "the note itself must still be saved"
+        assert not rows_of(sent), "a directory that could not be read resolves nothing"
+
+    def test_the_directory_is_read_once_and_then_cached(self, directory, directory_client):
+        calls = []
+        original = directory.list
+
+        async def counting_list(*args, **kwargs):
+            calls.append(1)
+            return await original(*args, **kwargs)
+
+        directory.list = counting_list
+        post_note(directory_client, "first @sam@example.com")
+        post_note(directory_client, "second @sam@example.com")
+        assert len(calls) == 1
+
+
+class TestMentionAutocomplete:
+    """The ``@`` suggestion route, gated the same as the directory itself."""
+
+    def test_staff_can_search_the_directory(self, directory, directory_client):
+        directory._rows[1] = {
+            "id": 1, "username": "sam", "email": "sam@example.com",
+            "firstName": "Sam", "lastName": "Okafor",
+        }
+        response = directory_client.get("/r/contacts/1/notes/mentions?q=sam")
+        assert response.status_code == 200
+        options = response.json()["options"]
+        assert options == [{"value": "sam@example.com", "label": "Sam Okafor (sam@example.com)"}]
+
+    def test_a_caller_outside_the_directorys_roles_gets_nothing(self, directory, directory_registry, settings):
+        directory._rows[1] = {"id": 1, "username": "sam", "email": "sam@example.com"}
+        app = create_app(settings=settings, registry=directory_registry)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            sign_in(client, email="kim@example.com", roles=["user"])
+            response = client.get("/r/contacts/1/notes/mentions?q=sam")
+        assert response.status_code == 200
+        assert response.json()["options"] == []
+
+    def test_a_record_nobody_may_read_offers_no_suggestions_either(
+        self, directory_registry, settings
+    ):
+        app = create_app(settings=settings, registry=directory_registry)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            sign_in(client, email="lee@example.com", roles=["user"])
+            response = client.get("/r/deals/1/notes/mentions?q=sam")
+        assert response.status_code in (403, 404)
+
+
+class TestWhoMayBrowseTheDirectory:
+    def _registry(self, **kwargs):
+        registry = build_registry()
+        registry.staff_directory = StaffDirectory("people", **kwargs)
+        return registry
+
+    def test_a_directory_naming_roles_admits_only_those_roles(self):
+        registry = self._registry(roles=("staff",))
+        staff = Identity(subject="s", email="s@x.test", roles=frozenset({"staff"}))
+        outsider = Identity(subject="o", email="o@x.test", roles=frozenset({"user"}))
+        assert notes.may_browse_directory(staff, registry)
+        assert not notes.may_browse_directory(outsider, registry)
+
+    def test_a_directory_naming_no_roles_admits_anyone_signed_in(self):
+        registry = self._registry()
+        anyone = Identity(subject="o", email="o@x.test", roles=frozenset({"user"}))
+        assert notes.may_browse_directory(anyone, registry)
+        assert not notes.may_browse_directory(Identity(subject="", is_authenticated=False), registry)
+
+    def test_with_no_directory_declared_anyone_signed_in_may(self):
+        anyone = Identity(subject="o", email="o@x.test", roles=frozenset({"user"}))
+        assert notes.may_browse_directory(anyone, build_registry())
+
+
+class TestADirectoryWithItsOwnFieldNames:
+    async def test_the_declared_fields_are_read(self):
+        notes._directory_cache = None
+        store = MemoryProvider(
+            [{"id": 1, "mail": "kim@example.com", "login": "kim", "first": "Kim", "last": "Lee"}]
+        )
+        registry = build_registry()
+        registry.add_resource(
+            Resource(
+                "people",
+                provider=store,
+                fields=[
+                    TextField("id", in_form=False),
+                    TextField("mail"),
+                    TextField("login"),
+                    TextField("first"),
+                    TextField("last"),
+                ],
+                audited=False,
+                timeline=False,
+            )
+        )
+        registry.staff_directory = StaffDirectory(
+            "people",
+            email_field="mail",
+            username_field="login",
+            name_fields=("first", "last"),
+            sort_field="login",
+        )
+        await registry.bind()
+        try:
+            people = await notes.staff_directory(registry, None)
+        finally:
+            notes._directory_cache = None
+        assert people == [{"email": "kim@example.com", "username": "kim", "label": "Kim Lee"}]

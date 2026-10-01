@@ -223,6 +223,60 @@ class TestAcceptedButNotApplied:
         assert result.correlation_id
 
 
+class TestPathResolver:
+    """A path filled in from the backend itself, not known at declare time.
+
+    The motivating case is Keycloak's client uuid , but the mechanism is generic: `warm()` gets one
+    chance to substitute a placeholder before any request needs it, and every
+    request refuses loudly rather than silently querying an unresolved URL.
+    """
+
+    def _provider(self, handler, *, resolver) -> RestProvider:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.test")
+        return RestProvider(
+            RestConnection(client),
+            RestMapping(path="/things/{token}/records", pagination="none", path_resolver=resolver),
+        )
+
+    async def test_warm_substitutes_the_placeholder_before_any_request(self):
+        async def resolver(connection, path):
+            return path.format(token="abc123")
+
+        seen = []
+
+        def handler(request):
+            seen.append(request.url.path)
+            return httpx.Response(200, json=[])
+
+        provider = self._provider(handler, resolver=resolver)
+        await provider.warm()
+        await provider.list(ListQuery(page_size=10), CTX)
+        assert seen == ["/things/abc123/records"]
+
+    async def test_an_unresolved_placeholder_is_refused_rather_than_queried(self):
+        # warm() was never called (or failed) -- the placeholder is still
+        # there. Sending it anyway would 404 and read back as "zero rows",
+        # which is exactly the silent-empty-screen failure this must avoid.
+        provider = self._provider(lambda r: httpx.Response(200, json=[]), resolver=lambda c, p: p)
+        with pytest.raises(Exception, match="unresolved placeholder"):
+            await provider.list(ListQuery(page_size=10), CTX)
+
+    async def test_health_reports_the_unresolved_placeholder_by_name(self):
+        provider = self._provider(lambda r: httpx.Response(200, json=[]), resolver=lambda c, p: p)
+        healthy, detail = await provider.health()
+        assert not healthy
+        assert "unresolved placeholder" in detail
+
+    async def test_a_provider_with_no_resolver_is_unaffected(self, api):
+        # The overwhelming majority of REST resources declare no resolver at
+        # all; warm() must be a no-op for them, not an error.
+        client = httpx.AsyncClient(transport=httpx.MockTransport(api.handler), base_url="https://api.test")
+        provider = RestProvider(RestConnection(client), RestMapping(path="/records", pagination="none"))
+        await provider.warm()
+        healthy, _ = await provider.health()
+        assert healthy
+
+
 class TestValueSerialisation:
     async def test_dates_are_sent_as_iso_strings(self, api):
         # Fields hand over real date objects; converting them for the wire is

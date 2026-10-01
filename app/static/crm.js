@@ -388,6 +388,81 @@
     };
   };
 
+  /* -- mentions -------------------------------------------------------------
+     The note textarea's "@" typeahead. `url` is the record's own
+     .../notes/mentions endpoint -- gated the same as the directory itself, so
+     an empty result here may mean "nobody matched" or "you may not ask", and
+     the box does not need to tell those apart. */
+
+  crm.mentionBox = function (url) {
+    return {
+      open: false,
+      options: [],
+      query: "",
+      anchor: -1,
+      active: 0,
+
+      // Arrows move through the list, Enter/Tab take the highlighted entry.
+      // Only while the list is showing: otherwise Enter and Tab keep doing
+      // what they do in any textarea.
+      onKey(event) {
+        if (!this.open || !this.options.length) return;
+        const last = this.options.length - 1;
+        if (event.key === "ArrowDown") {
+          this.active = this.active >= last ? 0 : this.active + 1;
+        } else if (event.key === "ArrowUp") {
+          this.active = this.active <= 0 ? last : this.active - 1;
+        } else if (event.key === "Enter" || event.key === "Tab") {
+          this.pick(event.target, this.options[this.active]);
+        } else {
+          return;
+        }
+        event.preventDefault();
+      },
+
+      onInput(event) {
+        const el = event.target;
+        // The word ending at the caret, if it starts with "@" and nothing
+        // that looks like an address has followed it yet -- matching the
+        // same "@handle" shape the server parses out of the finished note.
+        const head = el.value.slice(0, el.selectionStart);
+        const match = head.match(/(?:^|[^\w.@-])@([\w.+-]*)$/);
+        if (!match) {
+          this.open = false;
+          return;
+        }
+        this.anchor = el.selectionStart - match[1].length - 1;
+        this.query = match[1];
+        this.search();
+      },
+
+      async search() {
+        try {
+          const response = await fetch(url + "?q=" + encodeURIComponent(this.query), {
+            headers: { Accept: "application/json" },
+          });
+          this.options = response.ok ? (await response.json()).options || [] : [];
+        } catch (error) {
+          this.options = [];
+        }
+        this.active = 0;
+        this.open = this.options.length > 0;
+      },
+
+      pick(el, option) {
+        const before = el.value.slice(0, this.anchor);
+        const after = el.value.slice(el.selectionStart);
+        const handle = (option.value.split("@")[0] || option.value) + " ";
+        el.value = before + "@" + handle + after;
+        this.open = false;
+        this.options = [];
+        el.focus();
+        const caret = (before + "@" + handle).length;
+        el.setSelectionRange(caret, caret);
+      },
+    };
+  };
+
   /* -- row grids -----------------------------------------------------------
      A `rows` field is a table of ordinary inputs. Adding and removing rows is
      DOM work, and filling from a CSV is a convenience: the file is read here

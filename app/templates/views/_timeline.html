@@ -17,9 +17,24 @@
           hx-encoding="multipart/form-data"
           hx-disabled-elt="find button">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <textarea name="body" rows="2" class="note-input"
-                placeholder="Write a note. @mention somebody to tell them."
-                aria-label="New note">{{ note_draft }}</textarea>
+      <div class="note-mentions"
+           x-data="crm.mentionBox('/r/{{ resource.name }}/{{ record.pk }}/notes/mentions')">
+        <textarea name="body" rows="2" class="note-input"
+                  placeholder="Write a note. @mention somebody to tell them."
+                  aria-label="New note" autocomplete="off"
+                  @input="onInput" @keydown="onKey"
+                  @keydown.escape="open = false">{{ note_draft }}</textarea>
+        <ul class="mention-suggestions" x-show="open" x-cloak x-transition
+            @click.outside="open = false">
+          <template x-for="(option, index) in options" :key="option.value">
+            <li :class="{ 'is-active': index === active }" @mousemove="active = index">
+              <button type="button" class="btn btn-link btn-xs"
+                      @click="pick($el.closest('.note-mentions').querySelector('textarea'), option)"
+                      x-text="option.label"></button>
+            </li>
+          </template>
+        </ul>
+      </div>
       {% if note_error %}
         <p class="field-error" role="alert">{{ note_error }}</p>
       {% endif %}

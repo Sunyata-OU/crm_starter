@@ -105,7 +105,7 @@ S3 credentials and bucket go in `connections.yaml`.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `CRM_TASK_WATCHERS` | — | Addresses told about a task that is due and assigned to nobody. Empty means nobody is told and the task waits. |
+| `CRM_TASK_WATCHERS` | — | Addresses told about a task that is due and assigned to nobody. Empty falls back to everybody in the staff directory (`Registry.staff_directory`), where a module declares one; with neither, nobody is told and the task waits. |
 | `CRM_NOTIFY_CHANNELS` | `inapp` | `inapp`, `email`, `webhook`, `console`. The bell always works; the rest are opt-in. |
 | `CRM_JOBS_CONNECTION` | `db.main` | Which configured connection holds the job queue. Point it at a second database to keep a busy queue's writes off the one serving requests; `crm migrate --all` then covers both. |
 | `CRM_NOTIFY_DELIVERY` | `background` | How a notification reaches its channels. `background` is a task on this worker's event loop — immediate, and lost if the worker stops. `queue` hands it to the durable job queue, which survives a restart **but needs `crm worker` running**. `inline` delivers before the request returns. |

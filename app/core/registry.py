@@ -73,6 +73,32 @@ class MenuGroup:
         return sorted(self.items, key=lambda i: (i.order, i.label))
 
 
+@dataclass(frozen=True, slots=True)
+class StaffDirectory:
+    """Where to find the people who work here, for the features that address them.
+
+    A deployment that has a roster of staff -- accounts in an identity
+    provider, a users table -- names the resource that lists it. @mentions on a
+    note then resolve only to somebody in it, the autocomplete offers its
+    members, and work due and assigned to nobody is announced to all of them.
+    Without one, mentions fall back to matching the people already on the
+    record, and unassigned work goes to ``CRM_TASK_WATCHERS`` alone.
+    """
+
+    #: The resource listing staff.
+    resource: str
+    #: Roles allowed to search the directory (the @mention autocomplete hands
+    #: back names and addresses). Empty means any signed-in caller.
+    roles: tuple[str, ...] = ()
+    email_field: str = "email"
+    username_field: str = "username"
+    #: Fields joined, in order, into a display name.
+    name_fields: tuple[str, ...] = ("firstName", "lastName")
+    #: A sort the provider can honour. Some backends can only page an unsorted
+    #: union by reading all of it first, which trips their row budget.
+    sort_field: str = "username"
+
+
 class Registry:
     """Everything the application knows about, in one object."""
 
@@ -91,6 +117,8 @@ class Registry:
         #: actually handed. Left unset when nobody supplied it; a module should
         #: fall back rather than require it.
         self.settings: Any = None
+        #: Who the staff are, where a module can say. See :class:`StaffDirectory`.
+        self.staff_directory: StaffDirectory | None = None
 
     # -- resources ----------------------------------------------------------
 
