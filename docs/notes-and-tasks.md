@@ -47,7 +47,9 @@ receives and everybody assumes was received.
 resolves *only* against it: a note is an internal conversation, and
 `@anyone@anywhere` used to be taken at face value, which meant a note could
 notify an address that had never touched the back office. A module
-declares one by setting `registry.staff_directory`:
+declares one by setting `registry.staff_directory` (the `keycloak_accounts`
+module in [`crm_starter_modules`](https://github.com/Sunyata-OU/crm_starter_modules)
+does, from a Keycloak realm):
 
 ```python
 from app.core.registry import StaffDirectory

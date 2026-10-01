@@ -7,7 +7,7 @@ second. Unique among *open* tasks only: once one is done, the same condition
 arising again is genuinely new work.
 
 Revision ID: 7d2e91b4a6c0
-Revises: e1b7c0d43a92
+Revises: c5d1a92f7b31
 Created: 2026-09-30 11:00:00.000000
 """
 
@@ -19,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = '7d2e91b4a6c0'
-down_revision: str | None = 'e1b7c0d43a92'
+down_revision: str | None = 'c5d1a92f7b31'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

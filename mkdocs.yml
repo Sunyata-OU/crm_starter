@@ -52,7 +52,5 @@ nav:
   - Auth & Scoping: auth.md
   - Storage & Notifications: files-and-notifications.md
   - Notes & Tasks: notes-and-tasks.md
-  - Helpdesk: helpdesk.md
-  - Keycloak accounts: keycloak.md
   - Background Jobs: background-jobs.md
   - Scaling & Performance: scaling.md

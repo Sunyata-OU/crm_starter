@@ -92,20 +92,6 @@ connections:
   #     type: bearer
   #     token: ${REFERENCE_API_TOKEN}
 
-  # Admin access to a Keycloak realm, for the optional `keycloak_accounts`
-  # module (see docs/keycloak.md). Off until enabled.
-  api.keycloak:
-    type: rest
-    base_url: ${CRM_KEYCLOAK_URL:-}
-    enabled: ${CRM_KEYCLOAK_ENABLED:-false}
-    timeout: 20
-    auth:
-      type: oauth2
-      token_url: ${CRM_KEYCLOAK_URL:-}/realms/${CRM_KEYCLOAK_REALM:-master}/protocol/openid-connect/token
-      client_id: ${CRM_KEYCLOAK_CLIENT_ID:-admin-cli}
-      client_secret: ${CRM_KEYCLOAK_CLIENT_SECRET:-}
-      client_auth: body
-
   # Writes published as messages. Such a provider returns PENDING rather than a
   # saved record, and the UI reports "queued" instead of claiming success.
   # mq.events:

@@ -54,12 +54,13 @@ CRM_MODULES=demo_crm,demo_sales uv run crm dev
 | `core_identity` | always | users, API tokens (expiry, rotation, last-used) |
 | `core_access` | always | roles, permissions, audit log, notifications |
 | `core_tasks` | always | tasks — work a person owes, assignable, with a due-date sweep and an events endpoint |
-| `core_helpdesk` | opt-in | support tickets, a thread per ticket, a sweep |
-| `keycloak_accounts` | opt-in | the staff roster from a Keycloak realm, and signing in as an account with a log |
 | `demo_crm` | opt-in | companies, contacts — group tree, office map |
 | `demo_sales` | opt-in | deals, activities — board, calendar, charts, gantt, activity grid, dashboard, custom actions |
 | `demo_remote` | opt-in | a REST-backed resource and a queued write |
 | `demo_archive` | opt-in | one resource served from two databases at once |
+
+A helpdesk, a Keycloak staff roster with impersonation, and more live in
+[`crm_starter_modules`](https://github.com/Sunyata-OU/crm_starter_modules).
 
 `CRM_MODULES` is additive: it names the optional modules to switch on. The
 always-on `core_` modules load regardless, so no setting can produce an
@@ -217,8 +218,6 @@ app/templates/fields/display/currency.html
 - [`docs/auth.md`](docs/auth.md) — the four auth providers, RBAC and the audit trail
 - [`docs/files-and-notifications.md`](docs/files-and-notifications.md) — file storage backends and notification channels
 - [`docs/notes-and-tasks.md`](docs/notes-and-tasks.md) — the activity panel, notes, the task queue, the staff directory, and work raised by other systems
-- [`docs/helpdesk.md`](docs/helpdesk.md) — support tickets and the seam an inbound-mail branch plugs into
-- [`docs/keycloak.md`](docs/keycloak.md) — the staff roster from a Keycloak realm, and impersonation
 - [`docs/scaling.md`](docs/scaling.md) — measuring cost, tuning one host, running several
 
 ## Testing

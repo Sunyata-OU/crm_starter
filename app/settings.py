@@ -114,30 +114,6 @@ class Settings(BaseSettings):
     #: silently disappearing.
     oidc_keep_access_token: bool = False
 
-    # -- keycloak_accounts ----------------------------------------------------
-    #: Read by the optional ``keycloak_accounts`` module, which lists who holds
-    #: the staff roles in a realm and lets an administrator sign in as one of
-    #: them. Inert unless that module is enabled.
-    #:
-    #: The Keycloak base URL, e.g. ``https://auth.example.com``. Needed to send
-    #: the browser to the impersonation endpoint.
-    keycloak_url: str = ""
-    keycloak_realm: str = "master"
-    #: The ``connections.yaml`` REST connection carrying admin credentials for
-    #: the realm, which the accounts list is read through.
-    keycloak_connection: str = "api.keycloak"
-    #: The roles whose holders are "the staff": listed on the accounts screen
-    #: and offered to ``@mention``. Each must exist -- Keycloak answers 404 for
-    #: a role it does not have, which would take the screen down.
-    keycloak_roles: CsvList = ["admin"]
-    #: The clientId those roles are defined on, when they are *client* roles
-    #: rather than realm roles. Empty reads the realm-role endpoint.
-    keycloak_client: str = ""
-    #: That client's internal uuid, to skip the lookup of it at startup.
-    keycloak_client_uuid: str = ""
-    #: Where to land after impersonating -- the application the impersonated
-    #: session is for. Empty lands on Keycloak's own account page.
-    keycloak_frontend_url: str = ""
 
     #: Optional modules to switch on, by name. Additive: the platform's own
     #: modules load whatever this says, so listing the demo here cannot leave
@@ -192,24 +168,6 @@ class Settings(BaseSettings):
     #: honest, where picking somebody arbitrarily would not be.
     task_watchers: CsvList = []
 
-    # -- helpdesk -------------------------------------------------------
-    #: Who hears about a new ticket nobody is on, and one ageing past
-    #: `helpdesk_stale_hours` while assigned. Same reasoning as
-    #: `CRM_TASK_WATCHERS`: naming nobody means the sweep says nothing about
-    #: either, which is honest where guessing an owner would not be.
-    helpdesk_watchers: CsvList = []
-    #: How long an open ticket may sit without a fresh sweep notification
-    #: before the sweep decides it is worth mentioning again. Longer than
-    #: `DUE_WINDOW` in `app.tasks` because a ticket has no due date of its own
-    #: to be more or less urgent about -- this is purely "has it been quiet
-    #: for a worryingly long time".
-    helpdesk_stale_hours: float = 48.0
-    #: Domain used in the Message-ID this application generates for outbound
-    #: replies. Cosmetic -- nothing dials it -- but a Message-ID's domain half
-    #: is conventionally the sending system's, and `localhost` in a header a
-    #: customer's mail client stores forever looks like a misconfiguration
-    #: even when delivery worked perfectly.
-    helpdesk_mail_domain: str = "localhost"
 
     notify_webhook_url: str = ""
     notify_webhook_style: str = "slack"
@@ -260,7 +218,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "auth_providers", "modules", "dev_auth_roles", "proxy_trusted_ips",
-        "task_watchers", "helpdesk_watchers", "keycloak_roles",
+        "task_watchers",
         "notify_channels",
         mode="before",
     )
