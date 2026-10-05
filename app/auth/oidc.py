@@ -72,6 +72,7 @@ class OIDCAuth(BaseAuthProvider):
         roles_claim: str = "roles",
         role_map: dict[str, str] | None = None,
         default_roles: Sequence[str] = ("user",),
+        allowed_roles: Sequence[str] = (),
         label: str = "Sign in with SSO",
         timeout: float = 10.0,
     ) -> None:
@@ -85,6 +86,7 @@ class OIDCAuth(BaseAuthProvider):
         self.roles_claim = roles_claim
         self.role_map = role_map or {}
         self.default_roles = frozenset(default_roles)
+        self.allowed_roles = frozenset(allowed_roles)
         self.label = label
         self.timeout = timeout
         self._serializer = URLSafeTimedSerializer(secret_key, salt="crm.oidc.flow")
@@ -202,7 +204,30 @@ class OIDCAuth(BaseAuthProvider):
         if flow.get("nonce") and claims.get("nonce") not in (None, flow["nonce"]):
             raise AuthError("The sign-in response was replayed.", provider=self.name)
 
-        return self.to_identity(claims), tokens
+        identity = self.to_identity(claims)
+        if self.allowed_roles and not (identity.roles & self.allowed_roles):
+            # Authenticated by the issuer, but not somebody this application is
+            # for. Refusing here means no session is ever issued.
+            raise AuthError(
+                "Your account does not have access to this application.",
+                provider=self.name,
+            )
+        return identity, tokens
+
+    async def logout(self, request: Request, response: Response) -> str | None:
+        """End the issuer's session too.
+
+        Clearing only our cookie leaves the issuer signed in, so the next
+        "Sign in with SSO" completes instantly without a password and sign-out
+        looks like it did nothing.
+        """
+        try:
+            endpoint = (await self.metadata()).get("end_session_endpoint")
+        except ConfigError:
+            return None
+        if not endpoint:
+            return None
+        return str(httpx.URL(endpoint, params={"client_id": self.client_id}))
 
     def _read_flow(self, request: Request) -> dict[str, Any]:
         raw = request.cookies.get(FLOW_COOKIE)

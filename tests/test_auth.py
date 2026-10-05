@@ -726,3 +726,28 @@ class TestRejectedCredentialsReachTheClient:
         with TestClient(app_with_tokens, raise_server_exceptions=False) as client:
             response = client.get("/whoami", headers={"Authorization": "Bearer crm_wrong"})
             assert response.status_code == 401
+
+
+class TestOIDCAllowedRolesAndLogout:
+    def auth(self, **kw):
+        auth = OIDCAuth(issuer="https://issuer.test", client_id="x", secret_key=SECRET, **kw)
+        auth._metadata = {
+            "end_session_endpoint": "https://issuer.test/logout",
+            "token_endpoint": "https://issuer.test/token",
+        }
+        return auth
+
+    def test_allowed_roles_default_to_unrestricted(self):
+        assert self.auth().allowed_roles == frozenset()
+
+    def test_allowed_roles_are_stored(self):
+        assert self.auth(allowed_roles=("admin", "manager")).allowed_roles == {"admin", "manager"}
+
+    async def test_logout_sends_the_browser_to_the_issuer(self):
+        url = await self.auth().logout(None, None)
+        assert url == "https://issuer.test/logout?client_id=x"
+
+    async def test_logout_without_an_end_session_endpoint_stays_local(self):
+        auth = self.auth()
+        auth._metadata = {}
+        assert await auth.logout(None, None) is None

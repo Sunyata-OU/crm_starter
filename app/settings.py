@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     #: Claim holding the user's roles, and a claim-value-to-role mapping.
     oidc_roles_claim: str = "roles"
     oidc_default_roles: list[str] = ["user"]
+    #: When set, only identities holding one of these roles may sign in via
+    #: OIDC; everyone else is refused at the callback. Empty = no restriction.
+    oidc_allowed_roles: CsvList = []
 
     # -- passwords ----------------------------------------------------------
     # Only consulted by providers that hold passwords. Under SSO or a gateway,
@@ -217,7 +220,7 @@ class Settings(BaseSettings):
     map_attribution: str = "© OpenStreetMap contributors"
 
     @field_validator(
-        "auth_providers", "modules", "dev_auth_roles", "proxy_trusted_ips",
+        "auth_providers", "modules", "dev_auth_roles", "oidc_allowed_roles", "proxy_trusted_ips",
         "task_watchers",
         "notify_channels",
         mode="before",
