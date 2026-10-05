@@ -186,6 +186,7 @@ def _build_oidc(settings: Settings) -> OIDCAuth:
         scopes=settings.oidc_scopes,
         roles_claim=settings.oidc_roles_claim,
         default_roles=settings.oidc_default_roles,
+        allowed_roles=settings.oidc_allowed_roles,
     )
 
 
