@@ -8,12 +8,14 @@ instead of offering a form that would change nothing.
 
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Depends, Request
 from starlette.responses import RedirectResponse, Response
 
 from app.auth.base import AuthError, PasswordsNotManaged
 from app.auth.oidc import OIDCAuth
-from app.auth.session import TOKEN_KEY
+from app.auth.session import EXPIRES_KEY, REFRESH_KEY, TOKEN_KEY
 from app.core.errors import AuthenticationRequired, NotFound
 from app.core.results import Record
 from app.web.deps import View, build_view
@@ -145,7 +147,9 @@ async def auth_callback(request: Request, view: View = Depends(build_view)) -> R
     if provider is None:
         return view.redirect("/login")
 
-    keep_token = isinstance(provider, OIDCAuth) and view.settings.oidc_keep_access_token
+    is_oidc = isinstance(provider, OIDCAuth)
+    keep_refresh = is_oidc and view.settings.oidc_refresh_tokens
+    keep_token = is_oidc and (view.settings.oidc_keep_access_token or keep_refresh)
     tokens: dict = {}
     try:
         if keep_token:
@@ -160,11 +164,17 @@ async def auth_callback(request: Request, view: View = Depends(build_view)) -> R
 
     next_url = provider.next_url(request) if isinstance(provider, OIDCAuth) else "/"
     response: Response = RedirectResponse(_safe_next(next_url), status_code=303)
-    # Only the access token, and only when asked for: a refresh token would
-    # let whoever reads the cookie mint new ones long after the session ended,
-    # which is a different and much larger promise than "act as this person
-    # while they are signed in".
-    extra = {TOKEN_KEY: tokens["access_token"]} if keep_token and tokens.get("access_token") else {}
+    # The access token only when asked for, and the refresh token only when
+    # asked for separately: a refresh token lets whoever reads the cookie mint
+    # new access tokens long after the session ended, which is a different and
+    # much larger promise than "act as this person while they are signed in".
+    extra: dict = {}
+    if keep_token and tokens.get("access_token"):
+        if view.settings.oidc_keep_access_token:
+            extra[TOKEN_KEY] = tokens["access_token"]
+        if keep_refresh and tokens.get("refresh_token"):
+            extra[REFRESH_KEY] = tokens["refresh_token"]
+            extra[EXPIRES_KEY] = int(time.time()) + int(tokens.get("expires_in") or 300)
     view.state.sessions.save_identity(response, identity, **extra)
     if isinstance(provider, OIDCAuth):
         provider.clear_flow(response)

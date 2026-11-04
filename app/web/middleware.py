@@ -20,6 +20,10 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 
+from app.auth.base import AuthError
+from app.auth.oidc import OIDCAuth
+from app.auth.session import EXPIRES_KEY, REFRESH_KEY, TOKEN_KEY
+from app.core.errors import ConfigError
 from app.core.instrument import measure, report
 
 log = logging.getLogger("crm.request")
@@ -77,6 +81,78 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             )
             response.headers["X-Query-Count"] = str(stats.queries)
         return response
+
+
+class SessionRefreshMiddleware(BaseHTTPMiddleware):
+    """Renew an OIDC session shortly before its access token runs out.
+
+    Runs before the route, so the request that triggers a refresh already sees
+    the fresh token; the new cookie is also set on the response. Only acts on a
+    session that carries a refresh token, which only exists when
+    ``oidc_refresh_tokens`` is on, so everyone else pays one cookie read.
+
+    Outcomes: the issuer refuses the refresh token (session ended or revoked
+    there) -> the session is dropped and the person is signed out. The issuer
+    is unreachable or errors -> the request carries on with the session it has,
+    and the next one tries again; an outage is not a sign-out.
+    """
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        crm = getattr(request.app.state, "crm", None)
+        settings = getattr(crm, "settings", None)
+        if not settings or not settings.oidc_refresh_tokens:
+            return await call_next(request)
+
+        sessions = crm.sessions
+        refresh_token, expires = sessions.refresh_state(request)
+        if not refresh_token or expires - time.time() > settings.oidc_refresh_leeway:
+            return await call_next(request)
+
+        provider = crm.auth.get("oidc")
+        if not isinstance(provider, OIDCAuth):
+            return await call_next(request)
+
+        new_cookie: str | None = None
+        signed_out = False
+        try:
+            tokens = await provider.refresh(refresh_token)
+        except AuthError:
+            signed_out = True
+            log.info("oidc refresh refused; ending the session")
+        except ConfigError as exc:
+            log.warning("oidc refresh failed, keeping the session for now: %s", exc)
+        else:
+            data = sessions.read(request)
+            data[REFRESH_KEY] = tokens.get("refresh_token") or refresh_token
+            data[EXPIRES_KEY] = int(time.time()) + int(tokens.get("expires_in") or 300)
+            if settings.oidc_keep_access_token:
+                data[TOKEN_KEY] = tokens["access_token"]
+            new_cookie = sessions.encode(data)
+
+        if signed_out or new_cookie is not None:
+            _replace_cookie(request, sessions.cookie_name, new_cookie)
+
+        response = await call_next(request)
+        if signed_out:
+            sessions.clear(response)
+        elif new_cookie is not None:
+            sessions.write_encoded(response, new_cookie)
+        return response
+
+
+def _replace_cookie(request: Request, name: str, value: str | None) -> None:
+    """Rewrite this request's own Cookie header so the route sees the change."""
+    kept = []
+    for key, raw in request.scope["headers"]:
+        if key != b"cookie":
+            kept.append((key, raw))
+            continue
+        parts = [p for p in raw.decode("latin-1").split(";") if p.strip().partition("=")[0] != name]
+        if parts:
+            kept.append((key, ";".join(parts).encode("latin-1")))
+    if value is not None:
+        kept.append((b"cookie", f"{name}={value}".encode("latin-1")))
+    request.scope["headers"] = kept
 
 
 class CachedStaticFiles(StaticFiles):
