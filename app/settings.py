@@ -117,6 +117,20 @@ class Settings(BaseSettings):
     #: silently disappearing.
     oidc_keep_access_token: bool = False
 
+    #: Keep the OIDC refresh token too, and use it to renew the session (and
+    #: the access token) shortly before the access token expires, so a person
+    #: stays signed in for as long as the identity provider's own session
+    #: lasts instead of being sent back to log in after `session_max_age`.
+    #:
+    #: Off by default, and a larger promise than `oidc_keep_access_token`: the
+    #: cookie is signed, not encrypted, and a refresh token lets whoever reads
+    #: it mint new access tokens until the issuer's session ends or the token
+    #: is revoked. A refused refresh (session ended or revoked at the issuer)
+    #: signs the person out, so revocation at Keycloak takes effect.
+    oidc_refresh_tokens: bool = False
+
+    #: Seconds before the access token expires at which a refresh is attempted.
+    oidc_refresh_leeway: int = 60
 
     #: Optional modules to switch on, by name. Additive: the platform's own
     #: modules load whatever this says, so listing the demo here cannot leave

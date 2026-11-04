@@ -214,6 +214,36 @@ class OIDCAuth(BaseAuthProvider):
             )
         return identity, tokens
 
+    async def refresh(self, refresh_token: str) -> dict[str, Any]:
+        """Trade a refresh token for a fresh token bundle.
+
+        Raises `AuthError` when the issuer refuses -- the session ended, was
+        revoked, or the token was already used under rotation -- which the
+        caller treats as "signed out". A transport failure or a 5xx raises
+        `ConfigError` instead, so an issuer outage does not log everybody out.
+        """
+        meta = await self.metadata()
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": self.client_id,
+        }
+        if self.client_secret:
+            data["client_secret"] = self.client_secret
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(meta["token_endpoint"], data=data)
+            except httpx.HTTPError as exc:
+                raise ConfigError(f"could not reach the token endpoint: {exc}") from exc
+        if 400 <= response.status_code < 500:
+            raise AuthError("The identity provider ended this session.", provider=self.name)
+        if response.status_code >= 500:
+            raise ConfigError(f"token endpoint answered {response.status_code}")
+        tokens = response.json()
+        if not tokens.get("access_token"):
+            raise AuthError("The identity provider returned no access token.", provider=self.name)
+        return tokens
+
     async def logout(self, request: Request, response: Response) -> str | None:
         """End the issuer's session too.
 

@@ -37,7 +37,11 @@ from app.web.csrf import CSRFProtection
 from app.web.deps import AppState
 from app.web.errors import install_error_handlers
 from app.web.flash import FlashStore
-from app.web.middleware import CachedStaticFiles, RequestContextMiddleware
+from app.web.middleware import (
+    CachedStaticFiles,
+    RequestContextMiddleware,
+    SessionRefreshMiddleware,
+)
 from app.web.ratelimit import RateLimiter
 from app.web.render import Templates
 from app.web.routes import auth as auth_routes
@@ -310,6 +314,9 @@ def create_app(settings: Settings | None = None, registry: Registry | None = Non
         # request does.
         compresslevel=settings.gzip_level,
     )
+    # Added before the request context, so it sits inside it: a refresh that
+    # fails still gets a request id and a timing.
+    app.add_middleware(SessionRefreshMiddleware)
     app.add_middleware(
         RequestContextMiddleware,
         debug=settings.debug,

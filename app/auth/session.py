@@ -27,6 +27,11 @@ SESSION_SALT = "crm.session"
 #: cookie's 4 KB.
 TOKEN_KEY = "at"
 
+#: The refresh token, and the epoch second the access token stops working.
+#: Only present when `CRM_OIDC_REFRESH_TOKENS` is on.
+REFRESH_KEY = "rt"
+EXPIRES_KEY = "exp"
+
 #: Browsers drop a cookie larger than this, and drop it *silently* -- the
 #: response looks fine and the next request arrives signed out. Better to
 #: refuse to store the token and say so than to log everybody out.
@@ -70,9 +75,10 @@ class SessionStore:
             return {}
         return data if isinstance(data, dict) else {}
 
-    def write(self, response: Response, data: dict[str, Any]) -> None:
+    def encode(self, data: dict[str, Any]) -> str:
+        """The cookie value for a payload, shedding the tokens if it will not fit."""
         payload = self.serializer.dumps(data)
-        if len(payload) > COOKIE_LIMIT and TOKEN_KEY in data:
+        if len(payload) > COOKIE_LIMIT and (TOKEN_KEY in data or REFRESH_KEY in data):
             # Dropping the token costs an API call its attribution; dropping
             # the cookie costs the session. Prefer the smaller loss, and say
             # which one was taken.
@@ -82,11 +88,21 @@ class SessionStore:
                 "connection's own credentials.",
                 len(payload),
             )
-            data = {k: v for k, v in data.items() if k != TOKEN_KEY}
+            # The refresh token goes with it: it only exists to renew the
+            # access token, and a renewal would overflow the cookie again.
+            data = {
+                k: v for k, v in data.items() if k not in (TOKEN_KEY, REFRESH_KEY, EXPIRES_KEY)
+            }
             payload = self.serializer.dumps(data)
+        return payload
+
+    def write(self, response: Response, data: dict[str, Any]) -> None:
+        self.write_encoded(response, self.encode(data))
+
+    def write_encoded(self, response: Response, value: str) -> None:
         response.set_cookie(
             self.cookie_name,
-            payload,
+            value,
             max_age=self.max_age,
             httponly=True,
             secure=self.secure,
@@ -101,6 +117,14 @@ class SessionStore:
         `app/web/routes/auth.py` for what that setting costs.
         """
         return str(self.read(request).get(TOKEN_KEY) or "")
+
+    def refresh_state(self, request: Request) -> tuple[str, float]:
+        """The refresh token and the access token's expiry, or ``("", 0)``."""
+        data = self.read(request)
+        try:
+            return str(data.get(REFRESH_KEY) or ""), float(data.get(EXPIRES_KEY) or 0)
+        except (TypeError, ValueError):
+            return "", 0.0
 
     def clear(self, response: Response) -> None:
         response.delete_cookie(self.cookie_name, path=self.path)
