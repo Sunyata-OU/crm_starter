@@ -100,7 +100,7 @@ class SessionRefreshMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         crm = getattr(request.app.state, "crm", None)
         settings = getattr(crm, "settings", None)
-        if not settings or not settings.oidc_refresh_tokens:
+        if crm is None or not settings or not settings.oidc_refresh_tokens:
             return await call_next(request)
 
         sessions = crm.sessions

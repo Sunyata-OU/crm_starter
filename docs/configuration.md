@@ -46,6 +46,8 @@ to start on a configuration that is wrong in a way it can detect — see
 | `CRM_OIDC_ROLES_CLAIM` | `roles` | Claim carrying group membership. |
 | `CRM_OIDC_DEFAULT_ROLES` | `user` | Given to anyone the claim does not map. |
 | `CRM_OIDC_KEEP_ACCESS_TOKEN` | `false` | Keep the caller's access token in their session so a `caller_token` REST connection can act as them. The cookie is signed, not encrypted — see below. |
+| `CRM_OIDC_REFRESH_TOKENS` | `false` | Keep the OIDC refresh token in the session and renew it (and the access token) before the access token expires, so a person stays signed in as long as the issuer's own session lasts. A refused refresh signs them out; an issuer outage does not. Larger promise than the access token: whoever reads the signed-not-encrypted cookie can mint tokens until the issuer session ends. Keycloak refresh-token rotation can sign out a user whose parallel requests refresh at once — leave a reuse leeway on the realm. |
+| `CRM_OIDC_REFRESH_LEEWAY` | `60` | Seconds before access-token expiry at which a refresh is attempted. |
 | `CRM_PROXY_TRUSTED_IPS` | — | Networks allowed to assert identity by header. **Without this the provider stays off**, because otherwise any client could set the header and be anyone. |
 | `CRM_PROXY_USER_HEADER` | `X-Forwarded-User` | |
 | `CRM_PROXY_EMAIL_HEADER` | `X-Forwarded-Email` | |
