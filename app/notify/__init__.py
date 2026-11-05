@@ -10,6 +10,7 @@ Importing this package registers the built-in channels.
 from __future__ import annotations
 
 from app.notify.base import (  # noqa: F401
+    Attachment,
     BaseChannel,
     Channel,
     Delivery,
@@ -40,6 +41,7 @@ __all__ = [
     "EmailChannel",
     "InAppChannel",
     "Kind",
+    "Attachment",
     "Notification",
     "Notifier",
     "Priority",

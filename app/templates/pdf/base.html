@@ -1,0 +1,33 @@
+{# Base for every PDF. Not the screen layout: no navigation, no scripts, and
+   CSS written for paper. Override `title`, `content`, and optionally `styles`.
+   Only `data:` URIs and files under the static directory can be loaded. #}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{% block title %}{{ app_name }}{% endblock %}</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm;
+          @bottom-right { content: "Page " counter(page) " of " counter(pages);
+                          font-size: 8pt; color: #666; } }
+  body { font-family: "DejaVu Sans", Helvetica, Arial, sans-serif; font-size: 10pt; color: #1a1a1a; }
+  h1 { font-size: 20pt; margin: 0 0 4mm; }
+  h2 { font-size: 12pt; margin: 8mm 0 2mm; }
+  .muted { color: #666; }
+  .right { text-align: right; }
+  .head { display: flex; justify-content: space-between; margin-bottom: 8mm; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; border-bottom: 1.5pt solid #1a1a1a; padding: 2mm 2mm; font-size: 9pt; }
+  td { border-bottom: 0.5pt solid #ccc; padding: 2mm; vertical-align: top; }
+  tr { page-break-inside: avoid; }
+  thead { display: table-header-group; }
+  .totals { width: 70mm; margin-left: auto; margin-top: 5mm; }
+  .totals td { border: 0; padding: 1mm 2mm; }
+  .totals .grand td { border-top: 1.5pt solid #1a1a1a; font-weight: bold; }
+  {% block styles %}{% endblock %}
+</style>
+</head>
+<body>
+{% block content %}{% endblock %}
+</body>
+</html>

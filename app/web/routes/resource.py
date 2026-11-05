@@ -1523,6 +1523,45 @@ async def _related_tree(
     }
 
 
+@router.get("/{resource_name}/{pk}/pdf/{document_name}")
+async def record_pdf(
+    resource_name: str, pk: str, document_name: str, request: Request,
+    view: View = Depends(build_view),
+) -> Response:
+    """A record as a PDF, from the template its resource declares.
+
+    Gated by the same read permission as the record: a PDF shows nothing the
+    screen would not. ``?save=1`` also files a copy in the file store.
+    """
+    from app.core.errors import PermissionDenied
+    from app.pdf import PDF_CONTENT_TYPE
+    from app.pdf.documents import render_document
+
+    resource = view.resource(resource_name)
+    require_can(resource, "read", view.identity)
+    document = resource.documents.get(document_name)
+    if document is None:
+        raise NotFound("That document does not exist.")
+    if not document.allowed_for(view.identity):
+        raise PermissionDenied(f"You cannot produce {document.label!r}.")
+
+    record = await _load(view, resource, pk)
+    content = await render_document(
+        document, resource, record, view.ctx, view.templates, view.state.pdf_renderer()
+    )
+    filename = document.file_name(resource, record)
+    if request.query_params.get("save"):
+        from app.pdf.store import save_pdf
+
+        await save_pdf(content, filename, folder=f"{resource.name}/{record.pk}")
+    disposition = "inline" if document.inline else "attachment"
+    return Response(
+        content,
+        media_type=PDF_CONTENT_TYPE,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
+
+
 @router.get("/{resource_name}/{pk}/children")
 async def tree_children(
     resource_name: str, pk: str, view: View = Depends(build_view)

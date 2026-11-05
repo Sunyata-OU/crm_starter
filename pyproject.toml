@@ -28,6 +28,10 @@ dependencies = [
     "aioboto3>=15.5.0",
 ]
 
+[project.optional-dependencies]
+#: PDF generation (`app.pdf`). Also needs the Pango libraries on the host.
+pdf = ["weasyprint>=68"]
+
 [project.scripts]
 crm = "app.cli:app"
 
@@ -41,6 +45,7 @@ dev = [
     "mypy>=1.13",
     "types-pyyaml>=6.0",
     "httpx2>=2.12.0",
+    "weasyprint>=68",
     "mkdocs>=1.6",
     "mkdocs-material>=9.5",
 ]

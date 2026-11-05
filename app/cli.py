@@ -805,6 +805,50 @@ def tasks_sweep(
     )
 
 
+@app.command("pdf")
+def pdf_render(
+    template: str = typer.Argument(..., help="Template name, e.g. pdf/report.html."),
+    output: str = typer.Option(..., "--output", "-o", help="Where to write the PDF."),
+    data: str = typer.Option(
+        "", "--data", "-d", help="A JSON file whose top-level object is the template context."
+    ),
+) -> None:
+    """Render a template to a PDF file: a report with no record behind it.
+
+    Useful for trying a template, and for scheduled reports (cron, a CI job)
+    whose data is produced by something else.
+    """
+    import json
+
+    from app.pdf import PdfError, build_renderer, render_html
+    from app.web.render import Templates
+
+    settings = get_settings()
+    context = {}
+    if data:
+        try:
+            with open(data, encoding="utf-8") as handle:
+                context = json.load(handle)
+        except (OSError, ValueError) as exc:
+            _fail(f"Could not read {data}: {exc}")
+        if not isinstance(context, dict):
+            _fail(f"{data} must hold a JSON object.")
+
+    from app.core.clock import utcnow
+
+    templates = Templates(settings)
+    try:
+        html = templates.render(template, {"now": utcnow(), "timezone": settings.timezone, **context})
+        content = asyncio.run(render_html(build_renderer(settings), html))
+    except PdfError as exc:
+        _fail(exc.message)
+    except Exception as exc:  # noqa: BLE001 -- a bad template name or context: say which
+        _fail(f"{type(exc).__name__}: {exc}")
+    with open(output, "wb") as handle:
+        handle.write(content)
+    _echo(f"Wrote {output} ({len(content):,} bytes).")
+
+
 @app.command("notify-test")
 def notify_test(
     recipient: str = typer.Argument(..., help="Who to notify."),

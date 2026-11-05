@@ -224,6 +224,9 @@ class Settings(BaseSettings):
     date_format: str = "%d %b %Y"
     datetime_format: str = "%d %b %Y, %H:%M"
     currency_symbol: str = "$"
+    #: Which registered renderer paints PDFs (see `app.pdf`). WeasyPrint is the
+    #: built-in and needs `pip install 'crm-starter[pdf]'` and the Pango libraries.
+    pdf_renderer: str = "weasyprint"
     #: Where a map view fetches its tiles. Public OpenStreetMap by default,
     #: which is fine for a handful of users and against their usage policy for
     #: more than that -- point it at your own tile server, or at a commercial
