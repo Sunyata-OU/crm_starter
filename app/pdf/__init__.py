@@ -66,7 +66,7 @@ def safe_fetcher(static_dir: Path | None) -> Any:
 
     root = static_dir.resolve() if static_dir else None
 
-    class SafeFetcher(URLFetcher):  # type: ignore[misc]
+    class SafeFetcher(URLFetcher):
         def fetch(self, url: str, headers: Any = None) -> Any:
             if url.startswith("data:"):
                 return super().fetch(url, headers)
