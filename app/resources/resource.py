@@ -57,6 +57,9 @@ class Resource:
         display_field: str = "",
         views: Sequence[View] = (),
         actions: Sequence[Action] = (),
+        #: PDFs this resource can produce from a record: a button on the record
+        #: and a route, `/r/<name>/<pk>/pdf/<document>`. See `app.pdf.documents`.
+        documents: Sequence[Any] = (),
         policy: Policy | None = None,
         search: SearchSpec | None = None,
         default_sort: Sequence[Sort | str] = (),
@@ -114,6 +117,9 @@ class Resource:
         self.display_field = display_field or self._guess_display_field()
         self._views: dict[str, View] = {v.name: v for v in views}
         self.actions = {a.name: a for a in actions}
+        self.documents = {d.name: d for d in documents}
+        for document in documents:
+            self.actions.setdefault(f"pdf_{document.name}", document.action(self))
         self.policy = policy or Policy()
         self.search = search or SearchSpec()
         self.default_sort = tuple(

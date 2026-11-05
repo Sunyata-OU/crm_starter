@@ -43,6 +43,15 @@ class AppState:
     flash: Any
     #: Bounds sign-in attempts per source address.
     login_limiter: Any
+    #: Built on first use, so a deployment that never prints needs no renderer.
+    _pdf: Any = None
+
+    def pdf_renderer(self) -> Any:
+        if self._pdf is None:
+            from app.pdf import build_renderer
+
+            self._pdf = build_renderer(self.settings)
+        return self._pdf
 
 
 #: View kinds whose template includes the search-and-filter toolbar.

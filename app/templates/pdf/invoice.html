@@ -1,0 +1,55 @@
+{# A starting point for invoices -- copy it and make it yours.
+
+   Context:
+     record            the invoice (number, issued_on, due_on, currency ...)
+     seller, customer  dicts with name, address (list of lines), tax_id (optional)
+     lines             list of {description, quantity, unit_price}
+     tax_rate          e.g. 0.20; omit for no tax line
+     notes             free text printed under the totals
+   Money is formatted with the `money` filter (symbol from CRM_CURRENCY_SYMBOL). #}
+{% extends "pdf/base.html" %}
+{% block title %}Invoice {{ record.number }}{% endblock %}
+{% block content %}
+<div class="head">
+  <div>
+    <h1>Invoice</h1>
+    <div class="muted">No. {{ record.number }}</div>
+    <div class="muted">Issued {{ record.issued_on|date }}{% if record.due_on %} · Due {{ record.due_on|date }}{% endif %}</div>
+  </div>
+  <div class="right">
+    <strong>{{ seller.name }}</strong><br>
+    {% for line in seller.address or [] %}{{ line }}<br>{% endfor %}
+    {% if seller.tax_id %}<span class="muted">Tax ID {{ seller.tax_id }}</span>{% endif %}
+  </div>
+</div>
+
+<h2>Bill to</h2>
+<div>
+  <strong>{{ customer.name }}</strong><br>
+  {% for line in customer.address or [] %}{{ line }}<br>{% endfor %}
+  {% if customer.tax_id %}<span class="muted">Tax ID {{ customer.tax_id }}</span>{% endif %}
+</div>
+
+<table style="margin-top: 8mm">
+  <thead><tr><th>Description</th><th class="right">Qty</th><th class="right">Unit price</th><th class="right">Amount</th></tr></thead>
+  <tbody>
+  {% set ns = namespace(subtotal=0) %}
+  {% for line in lines %}
+    {% set amount = line.quantity * line.unit_price %}
+    {% set ns.subtotal = ns.subtotal + amount %}
+    <tr><td>{{ line.description }}</td><td class="right">{{ line.quantity }}</td>
+        <td class="right">{{ line.unit_price|money }}</td><td class="right">{{ amount|money }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<table class="totals">
+  <tr><td>Subtotal</td><td class="right">{{ ns.subtotal|money }}</td></tr>
+  {% if tax_rate %}
+  <tr><td>Tax ({{ (tax_rate * 100)|round(1) }}%)</td><td class="right">{{ (ns.subtotal * tax_rate)|money }}</td></tr>
+  {% endif %}
+  <tr class="grand"><td>Total</td><td class="right">{{ (ns.subtotal * (1 + (tax_rate or 0)))|money }}</td></tr>
+</table>
+
+{% if notes %}<h2>Notes</h2><p>{{ notes }}</p>{% endif %}
+{% endblock %}

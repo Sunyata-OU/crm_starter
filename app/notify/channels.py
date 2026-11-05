@@ -107,6 +107,12 @@ class EmailChannel(BaseChannel):
         if notification.url:
             lines.append(f"{self.base_url}{notification.url}")
         message.set_content("\n".join(lines))
+        for attachment in notification.attachments:
+            maintype, _, subtype = attachment.content_type.partition("/")
+            message.add_attachment(
+                attachment.content, maintype=maintype or "application",
+                subtype=subtype or "octet-stream", filename=attachment.filename,
+            )
         return message
 
     async def send(self, notification: Notification) -> Delivery:

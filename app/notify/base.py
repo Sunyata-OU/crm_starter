@@ -44,6 +44,19 @@ class Kind(StrEnum):
     ERROR = "error"
 
 
+@dataclass(frozen=True, slots=True)
+class Attachment:
+    """A file that travels with a notification -- a generated invoice, say.
+
+    Held in memory, never stored with the notification row, and only the email
+    channel delivers it; the others ignore it.
+    """
+
+    filename: str
+    content: bytes = dc_field(repr=False)
+    content_type: str = "application/pdf"
+
+
 @dataclass(slots=True)
 class Notification:
     """One thing one person should know about."""
@@ -63,8 +76,13 @@ class Notification:
     actor: str = ""
     channels: tuple[str, ...] = ()
     meta: dict[str, Any] = dc_field(default_factory=dict)
+    #: Files to send along. Immediate delivery only: they are not stored, so a
+    #: scheduled notification (which is rebuilt from its row) would lose them.
+    attachments: tuple[Attachment, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.attachments and self.due_at is not None and self.due_at > utcnow():
+            raise ValueError("a scheduled notification cannot carry attachments")
         self.kind = Kind(self.kind) if not isinstance(self.kind, Kind) else self.kind
         if not isinstance(self.priority, Priority):
             self.priority = Priority(self.priority)
